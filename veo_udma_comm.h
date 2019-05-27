@@ -4,8 +4,7 @@
 #define UDMA_MAX_PROCS 8
 #define UDMA_MAX_PEERS 64
 #define UDMA_MAX_SPLIT 32
-#define UDMA_BUFF_LEN (1 * 1024 * 1024)
-#define UDMA_NUM_BUFFS 2
+#define UDMA_BUFF_LEN (64 * 1024 * 1024)
 
 #define UDMA_DELAY_PEEK 1
 
@@ -30,12 +29,13 @@ struct vh_udma_proc {
 };
 	
 struct vh_udma_comm {
-	size_t *len;	// address of length mailbox
-	void *shm;	// buffer inside the shared memory segment
+	size_t *len;		// address of length mailbox
+	size_t buff_len;	// total buffer space length
+	void *shm;		// buffer inside the shared memory segment
 };
 struct vh_udma_peer {
-	struct vh_udma_comm send[UDMA_NUM_BUFFS];
-	struct vh_udma_comm recv[UDMA_NUM_BUFFS];
+	struct vh_udma_comm send;
+	struct vh_udma_comm recv;
 	struct veo_thr_ctxt *ctx;
 	int proc_id;
 	int shm_key, shm_segid;
@@ -44,14 +44,15 @@ struct vh_udma_peer {
 };
 
 struct ve_udma_comm {
-	uint64_t len_vehva;	// address of length mailbox
-	uint64_t shm_vehva;
-	uint64_t buff_vehva;
+	uint64_t len_vehva;	// start address of length mailbox (UDMA_MAX_SPLIT words)
+	size_t buff_len;	// total buffer space length
+	uint64_t shm_vehva;	// start of buffer space in shm segment vehva
+	uint64_t buff_vehva;	// address of mirror buffer in 
 	void *buff;
 };
 struct ve_udma_peer {
-	struct ve_udma_comm send[UDMA_NUM_BUFFS];
-	struct ve_udma_comm recv[UDMA_NUM_BUFFS];
+	struct ve_udma_comm send;
+	struct ve_udma_comm recv;
 };
 
 #endif /* VEO_UDMA_COMM_INCLUDE */

@@ -114,12 +114,10 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	printf("veshm_register ok\n");
 	
 	// now fill the ve_udma_peer structure
-	for (j = 0; j < UDMA_NUM_BUFFS; j++) {
-		ve_up->send[j].len_vehva = shm_vehva +((uint64_t)vh_up->recv[j].len - vh_shm_base);
-		ve_up->send[j].shm_vehva = shm_vehva +((uint64_t)vh_up->recv[j].shm - vh_shm_base);
-		ve_up->recv[j].len_vehva = shm_vehva +((uint64_t)vh_up->send[j].len - vh_shm_base);
-		ve_up->recv[j].shm_vehva = shm_vehva +((uint64_t)vh_up->send[j].shm - vh_shm_base);
-	}
+	ve_up->send.len_vehva = shm_vehva +((uint64_t)vh_up->recv.len - vh_shm_base);
+	ve_up->send.shm_vehva = shm_vehva +((uint64_t)vh_up->recv.shm - vh_shm_base);
+	ve_up->recv.len_vehva = shm_vehva +((uint64_t)vh_up->send.len - vh_shm_base);
+	ve_up->recv.shm_vehva = shm_vehva +((uint64_t)vh_up->send.shm - vh_shm_base);
 
 	printf("ve_up base settings ok\n");
 
@@ -132,7 +130,7 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	char *buff_base;
 	uint64_t buff_base_vehva;
 	size_t align_64mb = 64 * 1024 * 1024;
-	size_t buff_size = 2 * UDMA_NUM_BUFFS * UDMA_BUFF_LEN;
+	size_t buff_size = 2 * UDMA_BUFF_LEN;
 	buff_size = (buff_size + align_64mb - 1) & ~(align_64mb - 1);
 	
 	// allocate read and write buffers in one call
@@ -149,16 +147,14 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 		return -ENOMEM;
 	}
 	printf("ve_register_mem_to_dmaatb succeeded for %p\n", buff_base);
-	for (j = 0; j < UDMA_NUM_BUFFS; j++) {
-		ve_up->send[j].buff = buff_base;
-		buff_base += UDMA_BUFF_LEN;
-		ve_up->send[j].buff_vehva = buff_base_vehva;
-		buff_base_vehva += UDMA_BUFF_LEN;
-		ve_up->recv[j].buff = buff_base;
-		buff_base += UDMA_BUFF_LEN;
-		ve_up->recv[j].buff_vehva = buff_base_vehva;
-		buff_base_vehva += UDMA_BUFF_LEN;
-	}
+	ve_up->send.buff = buff_base;
+	buff_base += UDMA_BUFF_LEN;
+	ve_up->send.buff_vehva = buff_base_vehva;
+	buff_base_vehva += UDMA_BUFF_LEN;
+	ve_up->recv.buff = buff_base;
+	buff_base += UDMA_BUFF_LEN;
+	ve_up->recv.buff_vehva = buff_base_vehva;
+	buff_base_vehva += UDMA_BUFF_LEN;
 
 	printf("ve_udma_init done\n");
 	return 0;
@@ -169,7 +165,7 @@ int ve_udma_fini()
 	int err;
 
 	// unregister local buffer from DMAATB
-	err = ve_unregister_mem_from_dmaatb(udma_peer->send[0].buff_vehva);
+	err = ve_unregister_mem_from_dmaatb(udma_peer->send.buff_vehva);
 	if (err)
 		printf("Failed to unregister local buffer from DMAATB\n");
 
@@ -186,48 +182,54 @@ int ve_udma_fini()
 
 }
 
-size_t ve_udma_send(void *src, size_t len)
+#define SPLITBUFF(base, idx, size) (void *)((char *)base + idx * size)
+#define SPLITADDR(base, idx, size) (base + idx * size)
+#define SPLITLEN(base, idx) (void *)(base + idx * sizeof(size_t))
+
+size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 {
 	int j, jr, err;
 	size_t lenp = len, tlen;
-	size_t tlenr[UDMA_NUM_BUFFS] = {0};
+	size_t tlenr[UDMA_MAX_SPLIT] = {0};
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *srcp = (char *)src;
-	uint64_t srcr[UDMA_NUM_BUFFS];
-	ve_dma_handle_t handle[UDMA_NUM_BUFFS];
+	uint64_t srcr[UDMA_MAX_SPLIT];
+	ve_dma_handle_t handle[UDMA_MAX_SPLIT];
 
 	j = 0; jr = -1;
 	while(lenp > 0 || (jr >= 0 && tlenr[jr] > 0)) {
 		if (tlenr[j] == 0 && lenp > 0) {
-			while(ve_inst_lhm((void *)ve_up->send[j].len_vehva) > 0);
-			tlen = MIN(UDMA_BUFF_LEN, lenp);
+			while(ve_inst_lhm(SPLITLEN(ve_up->send.len_vehva, j)) > 0);
+			tlen = MIN(split_size, lenp);
+			memcpy(SPLITBUFF(ve_up->send.buff, j, split_size), (void *)srcp, tlen);
+
 			// dma from shm to buff
-			err = ve_dma_post(ve_up->send[j].shm_vehva, ve_up->send[j].buff_vehva,
+			err = ve_dma_post(SPLITADDR(ve_up->send.shm_vehva, j, split_size),
+					  SPLITADDR(ve_up->send.buff_vehva, j, split_size),
 					  (int)tlen, &handle[j]);
 			if (err) {
 				if (err == -EAGAIN)
 					continue;
 				printf("ve_dma_post has failed! err = %d\n", err);
-				ve_inst_shm((void *)ve_up->send[j].len_vehva, 0);
+				ve_inst_shm(SPLITLEN(ve_up->send.len_vehva, j), 0);
 				break;
 			}
-			srcr[j] = (uint64_t)srcp;
 			tlenr[j] = tlen;
 			if (jr == -1)
 				jr = j;
 		
 			lenp -= tlen;
 			srcp += tlen;
-			j = (j + 1) % UDMA_NUM_BUFFS;
+			j = (j + 1) % split;
 		}
 
 		if (jr >= 0 && tlenr[jr] > 0) {
 			err = ve_dma_poll(&handle[jr]);
 
 			if (err == 0) { // DMA completed normally
-				ve_inst_shm((void *)ve_up->send[jr].len_vehva, tlenr[jr]);
+				ve_inst_shm(SPLITLEN(ve_up->send.len_vehva, jr), tlenr[jr]);
 				tlenr[jr] = 0;
-				jr = (jr + 1) % UDMA_NUM_BUFFS;
+				jr = (jr + 1) % split;
 			} else if (err != -EAGAIN) {
 				printf("ve_dma_poll returned an error: 0x%x\n", err);
 				break;
@@ -237,55 +239,30 @@ size_t ve_udma_send(void *src, size_t len)
 	return len - lenp;
 }
 
-size_t ve_udma_recv1(void *dst, size_t len)
-{
-	int err;
-	size_t lenp = len, tlen;
-	struct ve_udma_peer *ve_up = udma_peer;
-	char *dstp = (char *)dst;
-
-	while(lenp > 0) {
-		// wait for len signal to be set
-		while((tlen = ve_inst_lhm((void *)ve_up->recv[0].len_vehva)) == 0);
-		// dma from shm to buff
-		err = ve_dma_post_wait(ve_up->recv[0].buff_vehva, ve_up->recv[0].shm_vehva, tlen);
-		if (err) {
-			printf("ve_dma_post_wait has failed! err = %d\n", err);
-			ve_inst_shm((void *)ve_up->recv[0].len_vehva, 0);
-			break;
-		}
-		memcpy((void *)dstp, ve_up->recv[0].buff, tlen);
-		// set len to 0
-		ve_inst_shm((void *)ve_up->recv[0].len_vehva, 0);
-		lenp -= tlen;
-		dstp += tlen;
-	}
-	return len - lenp;
-}
-
-size_t ve_udma_recv(void *dst, size_t len)
+size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 {
 	int j, jr, err;
 	size_t lenp = len, tlen;
-	size_t tlenr[UDMA_NUM_BUFFS] = {0};
+	size_t tlenr[UDMA_MAX_SPLIT] = {0};
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *dstp = (char *)dst;
-	uint64_t dstr[UDMA_NUM_BUFFS];
-	ve_dma_handle_t handle[UDMA_NUM_BUFFS];
+	uint64_t dstr[UDMA_MAX_SPLIT];
+	ve_dma_handle_t handle[UDMA_MAX_SPLIT];
 
 	j = 0; jr = -1;
 	while(lenp > 0 || (jr >= 0 && tlenr[jr] > 0)) {
 		if (tlenr[j] == 0 && lenp > 0) {
 			// wait for len signal to be set
-			while((tlen = ve_inst_lhm((void *)ve_up->recv[j].len_vehva)) == 0);
+			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0);
 			// dma from shm to buff
-			err = ve_dma_post(ve_up->recv[j].buff_vehva, ve_up->recv[j].shm_vehva,
+			err = ve_dma_post(SPLITADDR(ve_up->recv.buff_vehva, j, split_size),
+					  SPLITADDR(ve_up->recv.shm_vehva, j, split_size),
 					  (int)tlen, &handle[j]);
 			if (err) {
 				if (err == -EAGAIN)
 					continue;
 				printf("ve_dma_post has failed! err = %d\n", err);
-				ve_inst_shm((void *)ve_up->recv[j].len_vehva, 0);
+				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, j), 0);
 				break;
 			}
 			dstr[j] = (uint64_t)dstp;
@@ -295,17 +272,17 @@ size_t ve_udma_recv(void *dst, size_t len)
 		
 			lenp -= tlen;
 			dstp += tlen;
-			j = (j + 1) % UDMA_NUM_BUFFS;
+			j = (j + 1) % split;
 		}
 
 		if (jr >= 0 && tlenr[jr] > 0) {
 			err = ve_dma_poll(&handle[jr]);
 
 			if (err == 0) { // DMA completed normally
-				memcpy((void *)dstr[jr], ve_up->recv[jr].buff, tlenr[jr]);
-				ve_inst_shm((void *)ve_up->recv[jr].len_vehva, 0);
+				memcpy((void *)dstr[jr], SPLITBUFF(ve_up->recv.buff, jr, split_size), tlenr[jr]);
+				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, jr), 0);
 				tlenr[jr] = 0;
-				jr = (jr + 1) % UDMA_NUM_BUFFS;
+				jr = (jr + 1) % split;
 			} else if (err != -EAGAIN) {
 				printf("ve_dma_poll returned an error: 0x%x\n", err);
 				break;

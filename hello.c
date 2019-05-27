@@ -130,9 +130,7 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		       struct veo_thr_ctxt *ctx, uint64_t lib_handle)
 {
 	int rc, i, peer_id;
-	int num_buffs = 1 + 2 * UDMA_NUM_BUFFS;
 	char *mb_offs = NULL;
-	char *buff_offs = NULL;
 	struct vh_udma_peer *up;
 	int proc_id = -1;
 
@@ -158,26 +156,23 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 	up->proc_id = proc_id;
 	up->ctx = ctx;
 	up->shm_key = getpid() * UDMA_MAX_PEERS + udma_num_peers;
-	up->shm_size = num_buffs * UDMA_BUFF_LEN;
+	up->shm_size = 2 * UDMA_BUFF_LEN;
 	up->shm_segid = vh_shm_init(up->shm_key, up->shm_size, &up->shm_addr);
 	if (up->shm_segid == -1)
 		return vh_shm_fini(up->shm_segid, up->shm_addr);
 
-	mb_offs = (char *)up->shm_addr;
-	buff_offs = (char *)up->shm_addr + UDMA_BUFF_LEN;
-	// set mailbox addresses
-	for (i = 0; i < UDMA_NUM_BUFFS; i++) {
-		up->send[i].len = (size_t *)mb_offs;
-		*(up->send[i].len) = 0;
-		mb_offs += sizeof(size_t *);
-		up->recv[i].len = (size_t *)mb_offs;
-		*(up->recv[i].len) = 0;
-		mb_offs += sizeof(size_t *);
-		up->send[i].shm = (void *)buff_offs;
-		buff_offs += UDMA_BUFF_LEN;
-		up->recv[i].shm = (void *)buff_offs;
-		buff_offs += UDMA_BUFF_LEN;
-	}
+	up->send.shm = up->shm_addr;
+	mb_offs = (char *)up->send.shm + UDMA_BUFF_LEN \
+		- (UDMA_MAX_SPLIT * sizeof(size_t) + 2 * sizeof(uint64_t));
+	up->send.buff_len = mb_offs - (char *)up->send.shm;
+	up->send.len = (size_t *)mb_offs;
+
+	up->recv.shm = (void *)((char *)up->shm_addr + UDMA_BUFF_LEN);
+	mb_offs = (char *)up->recv.shm + UDMA_BUFF_LEN \
+		- (UDMA_MAX_SPLIT * sizeof(size_t) + 2 * sizeof(uint64_t));
+	up->recv.buff_len = mb_offs - (char *)up->recv.shm;
+	up->recv.len = (size_t *)mb_offs;
+	
 	rc = ve_udma_setup(up);
 	return rc;
 }
@@ -207,14 +202,44 @@ int veo_udma_peer_fini(int peer_id)
 	return 0;
 }
 
+int calc_split_send(size_t len, size_t *split_size)
+{
+	if (len > 16 * 1024 * 1024) {
+		*split_size = 8 * 1024 * 1024;
+		return 4;
+	} else {
+		*split_size = 1 * 1024 * 1024;
+		return 4;
+	}		
+}
+
+int calc_split_recv(size_t len, size_t *split_size)
+{
+	if (len < 1024 * 1024) {   
+		*split_size = 64 * 1024;
+		return 8;
+	} else if (len < 8 * 1024 * 1024) {
+		*split_size = 1 * 1024 * 1024;
+		return 3;
+	} else if (len < 32 * 1024 * 1024) {
+		*split_size = 1 * 1024 * 1024;
+		return 2;
+	} else {
+		*split_size = 4 * 1024 * 1024;
+		return 2;
+	}		
+}
+
+#define SPLITBUFF(base, idx, size) (void *)((char *)base + idx * size)
+
 /*
   Sent buffer from VH to VE
 */
 size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len)
 {
-	size_t tlen, lenp = len;
+	size_t tlen, lenp = len, split_size;
 	uint64_t req, retval = 0, dstp = dst;
-	int i, rc, err = 0;
+	int i, rc, split, err = 0;
 	char *srcp = (char *)src;
 	void *mp;
 	struct vh_udma_peer *up = NULL;
@@ -230,33 +255,32 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		return 0;
 	}
 
+	split = calc_split_send(len, &split_size);
+
 	struct veo_args *argp = veo_args_alloc();
 	veo_args_set_u64(argp, 0, (uint64_t)dst);
 	veo_args_set_u64(argp, 1, (uint64_t)len);
+	veo_args_set_i32(argp, 2, split);
+	veo_args_set_u64(argp, 3, (uint64_t)split_size);
 	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_recv, argp);
 	i = 0;
 	while (lenp > 0) {
-		tlen = MIN(UDMA_BUFF_LEN, lenp);
-		mp = memcpy(up->send[i].shm, (void *)srcp, tlen);
-		*(up->send[i].len) = tlen;
+		tlen = MIN(split_size, lenp);
+		mp = memcpy(SPLITBUFF(up->send.shm, i, split_size), (void *)srcp, tlen);
+		*(up->send.len + i) = tlen;
 		dstp += tlen;
 		srcp += tlen;
 		lenp -= tlen;
-		i = (i + 1) % UDMA_NUM_BUFFS;
+		i = (i + 1) % split;
 		// poll until len field is set to 0
-		int peek_delay = UDMA_DELAY_PEEK;
-		while (*(up->send[i].len) > 0) {
-			if (peek_delay == 0) {
-				// peek at request, did it bail out?
-				rc = veo_call_peek_result(ctx, req, &retval);
-				if (rc != VEO_COMMAND_UNFINISHED &&	\
-				    (size_t)retval != len) {
-					err = 1;
-					break;
-				}
-				peek_delay = UDMA_DELAY_PEEK;
+		while (*(up->send.len + i) > 0) {
+			// peek at request, did it bail out?
+			rc = veo_call_peek_result(ctx, req, &retval);
+			if (rc != VEO_COMMAND_UNFINISHED &&	\
+			    (size_t)retval != len) {
+				err = 1;
+				break;
 			}
-			--peek_delay;
 		}
 		if (err)
 			break;
@@ -273,9 +297,9 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 */
 size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t len)
 {
-	size_t tlen, lenp = len;
+	size_t tlen, lenp = len, split_size;
 	uint64_t req, retval = 0;
-	int i, j, rc, err = 0;
+	int i, j, rc, split, err = 0;
 	char *dstp = (char *)dst;
 	void *mp;
 	struct vh_udma_peer *up = NULL;
@@ -290,32 +314,31 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 		return 0;
 	}
 
+	split = calc_split_recv(len, &split_size);
+
 	struct veo_args *argp = veo_args_alloc();
 	veo_args_set_u64(argp, 0, (uint64_t)src);
 	veo_args_set_u64(argp, 1, (uint64_t)len);
+	veo_args_set_i32(argp, 2, split);
+	veo_args_set_u64(argp, 3, (uint64_t)split_size);
 	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_send, argp);
 	j = 0;
 	while (lenp > 0) {
-		int peek_delay = UDMA_DELAY_PEEK;
-		while ((tlen = *(up->recv[j].len)) == 0) {
-			if (peek_delay == 0) {
-				rc = veo_call_peek_result(ctx, req, &retval);
-				if (rc != VEO_COMMAND_UNFINISHED &&	\
-				    (size_t)retval != len) {
-					err = 1;
-					break;
-				}
-				peek_delay = UDMA_DELAY_PEEK;
+		while ((tlen = *(up->recv.len +j)) == 0) {
+			rc = veo_call_peek_result(ctx, req, &retval);
+			if (rc != VEO_COMMAND_UNFINISHED &&	\
+			    (size_t)retval != len) {
+				err = 1;
+				break;
 			}
-			--peek_delay;
 		}
 		if (err)
 			break;
-		memcpy((void *)dstp, up->recv[j].shm, tlen);
-		*(up->recv[j].len) = 0;
+		memcpy((void *)dstp, SPLITBUFF(up->recv.shm, j, split_size), tlen);
+		*(up->recv.len + j) = 0;
 		dstp += tlen;
 		lenp -= tlen;
-		j = (j + 1) % UDMA_NUM_BUFFS;
+		j = (j + 1) % split;
 	}
 	if (!err) {
 		rc = veo_call_wait_result(ctx, req, &retval);
