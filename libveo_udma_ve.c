@@ -33,11 +33,11 @@ struct ve_udma_peer *udma_peer;	// this peer's UDMA comm struct
 //__thread struct ve_udma_peer *udma_peer;	// this peer's UDMA comm struct
 
 
-long getusrcc() {
+static inline long getusrcc() {
         asm("smir %s0, %usrcc");
 }
 
-void busy_sleep_us(long us)
+static inline void busy_sleep_us(long us)
 {
 	long ts = getusrcc();
 	do {} while (getusrcc() - ts < us * 1400);
@@ -46,44 +46,40 @@ void busy_sleep_us(long us)
 /*
   Initialize VH-SHM segment, map it as VEHVA.
 */
-int vhshm_register(int key, size_t size)
+static int vhshm_register(int key, size_t size)
 {
 	struct shmid_ds ds;
+	uint64_t remote_vehva = 0;
+	void *remote_addr = NULL;
 	int err = 0;
 
 	//TODO: unregister and release old segment if reinitializing a new one
 	shm_key = key;
 	shm_size = size;
-
-	printf("VE: (shm_key = %d, size = %d)\n", shm_key, shm_size);
+	dprintf("VE: (shm_key = %d, size = %d)\n", shm_key, shm_size);
 
 	//
 	// determine shm segment ID from its key
 	//
 	shm_segid = vh_shmget(shm_key, shm_size, SHM_HUGETLB);
 	if (shm_segid == -1) {
-		printf("VE: vh_shmget key=%d failed, reason: %s\n", key, strerror(errno));
-		return -1;
+		eprintf("VE: vh_shmget key=%d failed, reason: %s\n", key, strerror(errno));
+		return -EINVAL;
 	}
-
-	printf("VE: shm_segid = %d\n", shm_segid);
-
-	uint64_t remote_vehva = 0;
-	void *remote_addr = NULL;
+	dprintf("VE: shm_segid = %d\n", shm_segid);
 
 	//
 	// attach shared memory VH address space and register it to DMAATB,
 	// the region is accessible for DMA unter its VEHVA remote_vehva
 	//
         shm_remote_addr = vh_shmat(shm_segid, NULL, 0, (void **)&shm_vehva);
-
 	if (shm_remote_addr == NULL) {
-		printf("VE: (remote_addr == NULL)\n");
-		return 3;
+		eprintf("VE: (remote_addr == NULL)\n");
+		return -ENOMEM;
 	}
 	if (shm_vehva == (uint64_t)-1) {
-		printf("VE: (shm_vehva == -1)\n");
-		return 4;
+		eprintf("VE: (shm_vehva == -1)\n");
+		return -ENOMEM;
 	}
 	return 0;
 }
@@ -99,7 +95,7 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	ve_up = (struct ve_udma_peer *)malloc(sizeof(struct ve_udma_peer));
 	if (ve_up == NULL)
 		return -ENOMEM;
-	printf("ve allocated ve_up=%p\n", (void *)ve_up);
+	dprintf("ve allocated ve_up=%p\n", (void *)ve_up);
 	udma_peer = ve_up;
 
 	// find and register shm segment, if not done, yet
@@ -111,7 +107,6 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 			return err;
 		}
 	}
-	printf("veshm_register ok\n");
 	
 	// now fill the ve_udma_peer structure
 	ve_up->send.len_vehva = shm_vehva +((uint64_t)vh_up->recv.len - vh_shm_base);
@@ -119,12 +114,10 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	ve_up->recv.len_vehva = shm_vehva +((uint64_t)vh_up->send.len - vh_shm_base);
 	ve_up->recv.shm_vehva = shm_vehva +((uint64_t)vh_up->send.shm - vh_shm_base);
 
-	printf("ve_up base settings ok\n");
-
 	// Initialize DMA
 	err = ve_dma_init();
 	if (err) {
-		printf("Failed to initialize DMA\n");
+		eprintf("Failed to initialize DMA\n");
 		return err;
 	}
 	char *buff_base;
@@ -136,17 +129,17 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	// allocate read and write buffers in one call
 	posix_memalign((void **)&buff_base, align_64mb, buff_size);
 	if (buff_base == NULL) {
-		printf("allocating ve udma buffer failed! buffsize=%lu\n", buff_size);
+		eprintf("allocating ve udma buffer failed! buffsize=%lu\n", buff_size);
 		return -ENOMEM;
 	}
-	printf("ve allocated buff at %p\n", buff_base);
+	dprintf("ve allocated buff at %p\n", buff_base);
 	//busy_sleep_us(1*1000*1000);
 	buff_base_vehva = ve_register_mem_to_dmaatb(buff_base, buff_size);
 	if (buff_base_vehva == (uint64_t)-1) {
-		printf("mapping ve udma buffer failed! buffsize=%lu\n", buff_size);
+		eprintf("mapping ve udma buffer failed! buffsize=%lu\n", buff_size);
 		return -ENOMEM;
 	}
-	printf("ve_register_mem_to_dmaatb succeeded for %p\n", buff_base);
+	dprintf("ve_register_mem_to_dmaatb succeeded for %p\n", buff_base);
 	ve_up->send.buff = buff_base;
 	buff_base += UDMA_BUFF_LEN;
 	ve_up->send.buff_vehva = buff_base_vehva;
@@ -155,31 +148,28 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	buff_base += UDMA_BUFF_LEN;
 	ve_up->recv.buff_vehva = buff_base_vehva;
 	buff_base_vehva += UDMA_BUFF_LEN;
-
-	printf("ve_udma_init done\n");
 	return 0;
 }
 
-int ve_udma_fini()
+void ve_udma_fini()
 {
 	int err;
 
 	// unregister local buffer from DMAATB
 	err = ve_unregister_mem_from_dmaatb(udma_peer->send.buff_vehva);
 	if (err)
-		printf("Failed to unregister local buffer from DMAATB\n");
+		eprintf("Failed to unregister local buffer from DMAATB\n");
 
 	// detach VH sysV shm segment
 	if (shm_remote_addr) {
 		err = vh_shmdt(shm_remote_addr);
 		if (err)
-			printf("Failed to detach from VH sysV shm\n");
+			eprintf("Failed to detach from VH sysV shm\n");
 		else {
 			shm_remote_addr = NULL;
 			shm_vehva = 0;
 		}
 	}
-
 }
 
 #define SPLITBUFF(base, idx, size) (void *)((char *)base + idx * size)

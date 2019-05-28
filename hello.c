@@ -19,333 +19,11 @@
 #include <ve_offload.h>
 #include "veo_udma_comm.h"
 
-/* variables for veo_udma_comm */
-int udma_num_procs = 0;
-int udma_num_peers = 0;
-struct vh_udma_proc *udma_procs[UDMA_MAX_PROCS];
-struct vh_udma_peer *udma_peers[UDMA_MAX_PEERS];
-
 /* variables for VEO demo */
 int ve_node_number = 0;
 struct veo_proc_handle *proc = NULL;
 struct veo_thr_ctxt *ctx = NULL;
 uint64_t handle = 0;
-
-/*
-  Returns: the segment ID of the shm segment.
- */
-int vh_shm_init(int key, size_t size, void **local_addr)
-{
-	int err = 0;
-	struct shmid_ds ds;
-	
-	int segid = shmget(key, size, IPC_CREAT | SHM_HUGETLB | S_IRWXU); 
-	if (segid == -1)
-		return -1;
-	*local_addr = shmat(segid, NULL, 0);
-	dprintf("local_addr: %p\n", *local_addr);
-	if (*local_addr == (void *) -1) {
-		eprintf("shmat failed!? releasing shm segment. key=%d\n", key);
-		shmctl(segid, IPC_RMID, NULL);
-		segid = -1;
-	}
-	return segid;
-}
-
-int vh_shm_fini(int segid, void *local_addr)
-{
-	int err = 0;
-
-	if (local_addr != (void *)-1) {
-		err = shmdt(local_addr);
-		if (err < 0) {
-			eprintf("Failed to detach from SHM segment at %p\n", local_addr);
-			return err;
-		}
-	}
-	if (segid != -1) {
-		err = shmctl(segid, IPC_RMID, NULL);
-		if (err < 0)
-			eprintf("Failed to remove SHM segment ID %d\n", segid);
-	}
-	return err;
-}
-
-void vh_udma_proc_setup(struct vh_udma_proc *pp, int ve_node_id,
-			struct veo_proc_handle *proc, uint64_t lib_handle)
-{
-	int err;
-
-	pp->ve_node_id = ve_node_id;
-	pp->count = 0;
-	pp->proc = proc;
-	pp->lib_handle = lib_handle;
-	// find function addresses
-	pp->ve_udma_init = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_init");
-	pp->ve_udma_fini = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_fini");
-	pp->ve_udma_send = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_send");
-	pp->ve_udma_recv = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_recv");
-}
-	
-
-int ve_udma_setup(struct vh_udma_peer *up)
-{
-	uint64_t req;
-	int64_t res;
-	int err;
-
-	// call VE side init function
-	struct veo_args *argp = veo_args_alloc();
-	veo_args_set_stack(argp, VEO_INTENT_IN, 0, (char *)up, sizeof(struct vh_udma_peer));
-	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_init, argp);
-	err = veo_call_wait_result(ctx, req, (uint64_t *)&res);
-	if (err)
-		eprintf("veo_call_wait_result err=%d\n", err);
-	veo_args_free(argp);
-	return err != 0 ? err : (int)res;
-}
-
-int ve_udma_close(struct vh_udma_peer *up)
-{
-	uint64_t req;
-	int64_t res;
-	int err;
-
-	// call VE side init function
-	struct veo_args *argp = veo_args_alloc();
-	req = veo_call_async(up->ctx, udma_procs[up->proc_id]->ve_udma_fini, argp);
-	err = veo_call_wait_result(ctx, req, (uint64_t *)&res);
-	if (err)
-		eprintf("veo_call_wait_result err=%d\n", err);
-	veo_args_free(argp);
-	return err != 0 ? err : (int)res;
-}
-
-/*
-  VH side UDMA communication init.
-  - each context should be a peer!
-  - VH has no peer ID. 
-*/
-int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
-		       struct veo_thr_ctxt *ctx, uint64_t lib_handle)
-{
-	int rc, i, peer_id;
-	char *mb_offs = NULL;
-	struct vh_udma_peer *up;
-	int proc_id = -1;
-
-	/* do you have a peer for this proc already? */
-	for (i = 0; i < udma_num_procs; i++) {
-		if (udma_procs[i]->proc == proc) {
-			proc_id = i;
-			break;
-		}
-	}
-	if (proc_id < 0) {
-		proc_id = udma_num_procs++;
-		struct vh_udma_proc *pp = \
-			(struct vh_udma_proc *)malloc(sizeof(struct vh_udma_proc));
-		vh_udma_proc_setup(pp, ve_node_id, proc, lib_handle);
-		udma_procs[proc_id] = pp;
-	}
-	udma_procs[proc_id]->count++;
-
-	up = (struct vh_udma_peer *)malloc(sizeof(struct vh_udma_peer));
-	peer_id = udma_num_peers++;
-	udma_peers[peer_id] = up;
-	up->proc_id = proc_id;
-	up->ctx = ctx;
-	up->shm_key = getpid() * UDMA_MAX_PEERS + udma_num_peers;
-	up->shm_size = 2 * UDMA_BUFF_LEN;
-	up->shm_segid = vh_shm_init(up->shm_key, up->shm_size, &up->shm_addr);
-	if (up->shm_segid == -1)
-		return vh_shm_fini(up->shm_segid, up->shm_addr);
-
-	up->send.shm = up->shm_addr;
-	mb_offs = (char *)up->send.shm + UDMA_BUFF_LEN \
-		- (UDMA_MAX_SPLIT * sizeof(size_t) + 2 * sizeof(uint64_t));
-	up->send.buff_len = mb_offs - (char *)up->send.shm;
-	up->send.len = (size_t *)mb_offs;
-
-	up->recv.shm = (void *)((char *)up->shm_addr + UDMA_BUFF_LEN);
-	mb_offs = (char *)up->recv.shm + UDMA_BUFF_LEN \
-		- (UDMA_MAX_SPLIT * sizeof(size_t) + 2 * sizeof(uint64_t));
-	up->recv.buff_len = mb_offs - (char *)up->recv.shm;
-	up->recv.len = (size_t *)mb_offs;
-	
-	rc = ve_udma_setup(up);
-	return rc;
-}
-
-int veo_udma_peer_fini(int peer_id)
-{
-	int rc;
-
-	struct vh_udma_peer *up = udma_peers[peer_id];
-	rc = ve_udma_close(up);
-	if (rc) {
-		eprintf("ve_udma_close failed for peer %d, rc=%d\n", peer_id, rc);
-		return rc;
-	}
-	rc = vh_shm_fini(up->shm_segid, up->shm_addr);
-	if (rc) {
-		eprintf("vh_shm_fini failed for peer %d, rc=%d\n", peer_id, rc);
-		return rc;
-	}
-	udma_procs[up->proc_id]->count--;
-	if (udma_procs[up->proc_id]->count == 0) {
-		free(udma_procs[up->proc_id]);
-		udma_procs[up->proc_id] = NULL;
-	}
-	free(udma_peers[peer_id]);
-	udma_peers[peer_id] = NULL;
-	return 0;
-}
-
-int calc_split_send(size_t len, size_t *split_size)
-{
-	if (len > 16 * 1024 * 1024) {
-		*split_size = 8 * 1024 * 1024;
-		return 4;
-	} else {
-		*split_size = 1 * 1024 * 1024;
-		return 4;
-	}		
-}
-
-int calc_split_recv(size_t len, size_t *split_size)
-{
-	if (len < 1024 * 1024) {   
-		*split_size = 64 * 1024;
-		return 8;
-	} else if (len < 8 * 1024 * 1024) {
-		*split_size = 1 * 1024 * 1024;
-		return 3;
-	} else if (len < 32 * 1024 * 1024) {
-		*split_size = 1 * 1024 * 1024;
-		return 2;
-	} else {
-		*split_size = 4 * 1024 * 1024;
-		return 2;
-	}		
-}
-
-#define SPLITBUFF(base, idx, size) (void *)((char *)base + idx * size)
-
-/*
-  Sent buffer from VH to VE
-*/
-size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len)
-{
-	size_t tlen, lenp = len, split_size;
-	uint64_t req, retval = 0, dstp = dst;
-	int i, rc, split, err = 0;
-	char *srcp = (char *)src;
-	void *mp;
-	struct vh_udma_peer *up = NULL;
-
-	for (i = 0; i < udma_num_peers; i++) {
-		if (udma_peers[i]->ctx == ctx) {
-			up = udma_peers[i];
-			break;
-		}
-	}
-	if (!up) {
-		eprintf("veo_udma_recv ctx not found!\n");
-		return 0;
-	}
-
-	split = calc_split_send(len, &split_size);
-
-	struct veo_args *argp = veo_args_alloc();
-	veo_args_set_u64(argp, 0, (uint64_t)dst);
-	veo_args_set_u64(argp, 1, (uint64_t)len);
-	veo_args_set_i32(argp, 2, split);
-	veo_args_set_u64(argp, 3, (uint64_t)split_size);
-	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_recv, argp);
-	i = 0;
-	while (lenp > 0) {
-		tlen = MIN(split_size, lenp);
-		mp = memcpy(SPLITBUFF(up->send.shm, i, split_size), (void *)srcp, tlen);
-		*(up->send.len + i) = tlen;
-		dstp += tlen;
-		srcp += tlen;
-		lenp -= tlen;
-		i = (i + 1) % split;
-		// poll until len field is set to 0
-		while (*(up->send.len + i) > 0) {
-			// peek at request, did it bail out?
-			rc = veo_call_peek_result(ctx, req, &retval);
-			if (rc != VEO_COMMAND_UNFINISHED &&	\
-			    (size_t)retval != len) {
-				err = 1;
-				break;
-			}
-		}
-		if (err)
-			break;
-	}
-	if (!err) {
-		rc = veo_call_wait_result(ctx, req, &retval);
-	}
-	veo_args_free(argp);
-	return (size_t)retval;
-}
-
-/*
-  Recv buffer from VE to VH
-*/
-size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t len)
-{
-	size_t tlen, lenp = len, split_size;
-	uint64_t req, retval = 0;
-	int i, j, rc, split, err = 0;
-	char *dstp = (char *)dst;
-	void *mp;
-	struct vh_udma_peer *up = NULL;
-
-	for (i = 0; i < udma_num_peers; i++)
-		if (udma_peers[i]->ctx == ctx) {
-			up = udma_peers[i];
-			break;
-		}
-	if (!up) {
-		printf("veo_udma_recv ctx not found!\n");
-		return 0;
-	}
-
-	split = calc_split_recv(len, &split_size);
-
-	struct veo_args *argp = veo_args_alloc();
-	veo_args_set_u64(argp, 0, (uint64_t)src);
-	veo_args_set_u64(argp, 1, (uint64_t)len);
-	veo_args_set_i32(argp, 2, split);
-	veo_args_set_u64(argp, 3, (uint64_t)split_size);
-	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_send, argp);
-	j = 0;
-	while (lenp > 0) {
-		while ((tlen = *(up->recv.len +j)) == 0) {
-			rc = veo_call_peek_result(ctx, req, &retval);
-			if (rc != VEO_COMMAND_UNFINISHED &&	\
-			    (size_t)retval != len) {
-				err = 1;
-				break;
-			}
-		}
-		if (err)
-			break;
-		memcpy((void *)dstp, SPLITBUFF(up->recv.shm, j, split_size), tlen);
-		*(up->recv.len + j) = 0;
-		dstp += tlen;
-		lenp -= tlen;
-		j = (j + 1) % split;
-	}
-	if (!err) {
-		rc = veo_call_wait_result(ctx, req, &retval);
-	}
-	veo_args_free(argp);
-	return (size_t)retval;
-}
 
 int veo_init()
 {
@@ -375,7 +53,7 @@ int veo_init()
 #endif
 	handle = 0;
 #else
-	handle = veo_load_library(proc, "./libvehello.so");
+	handle = veo_load_library(proc, "./libveo_udma_ve.so");
 	if (handle == 0) {
 		perror("ERROR: veo_load_library");
 		return -1;
@@ -400,23 +78,36 @@ int veo_finish()
 
 int main(int argc, char **argv)
 {
-	int i, rc, n;
+	int i, rc, n, peer_id;
 	uint64_t ve_buff;
 	void *local_buff;
 	size_t bsize = 1024*1024, res;
 	struct timespec ts, te;
 	uint64_t start, end;
 	double bw;
-
-	if (argc > 1)
+	int do_send = 1, do_recv = 1;
+	
+	if (argc == 2)
 		bsize = atol(argv[1]);
+	else if (argc == 3) {
+		if (strcmp(argv[1], "send") == 0)
+			do_recv = 0;
+		if (strcmp(argv[1], "recv") == 0)
+			do_send = 0;
+		bsize = atol(argv[2]);
+	}
 
 	rc = veo_init();
 	if (rc != 0)
 		exit(1);
-	rc = veo_udma_peer_init(ve_node_number, proc, ctx, handle);
-	if (rc != 0) {
-		printf("veo_udma_init failed with rc=%d\n", rc);
+
+	/*
+	  Initialize this contaxt as VEO UDMA communication peer.
+	  NOTE: currently only one context per proc is supported!
+	*/
+	peer_id = veo_udma_peer_init(ve_node_number, proc, ctx, handle);
+	if (peer_id < 0) {
+		printf("veo_udma_peer_init failed with rc=%d\n", rc);
 		exit(1);
 	}
 
@@ -429,35 +120,41 @@ int main(int argc, char **argv)
 		printf("veo_alloc_mem failed with rc=%d\n", rc);
 		goto finish;
 	}
-	printf("calling veo_udma_send\n");
-	n = (int)(5.0 * 1.e9 / (double)bsize);
-        n > 0 ? n : 1;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	for (i = 0; i < n; i++)
-		res = veo_udma_send(ctx, local_buff, ve_buff, bsize);
-	clock_gettime(CLOCK_REALTIME, &te);
-	start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
-	end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
-	bw = (double)bsize * n/((double)(end - start)/1e9);
-	bw = bw / 1e6;
-	printf("veo_udma_send returned: %lu bw=%f MB/s\n", res, bw);
 
-	printf("calling veo_udma_recv\n");
-	n = (int)(5.0 * 1.e9 / (double)bsize);
-        n > 0 ? n : 1;
-	clock_gettime(CLOCK_REALTIME, &ts);
-	for (i = 0; i < n; i++)
-		res = veo_udma_recv(ctx, ve_buff, local_buff, bsize);
-	clock_gettime(CLOCK_REALTIME, &te);
-	start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
-	end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
-	bw = (double)bsize * n/((double)(end - start)/1e9);
-	bw = bw / 1e6;
-	printf("veo_udma_recv returned: %lu bw=%f MB/s\n", res, bw);
+	if (bsize < 512 * 1024)
+		n = (int)(100 * 1.e6 / (double)bsize);
+	else
+		n = (int)(5.0 * 1.e9 / (double)bsize);
+	n > 0 ? n : 1;
+
+	if (do_send) {
+		printf("calling veo_udma_send\n");
+		clock_gettime(CLOCK_REALTIME, &ts);
+		for (i = 0; i < n; i++)
+			res = veo_udma_send(ctx, local_buff, ve_buff, bsize);
+		clock_gettime(CLOCK_REALTIME, &te);
+		start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
+		end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
+		bw = (double)bsize * n/((double)(end - start)/1e9);
+		bw = bw / 1e6;
+		printf("veo_udma_send returned: %lu bw=%f7.0 MB/s\n", res, bw);
+	}
+
+	if (do_recv) {
+		printf("calling veo_udma_recv\n");
+		clock_gettime(CLOCK_REALTIME, &ts);
+		for (i = 0; i < n; i++)
+			res = veo_udma_recv(ctx, ve_buff, local_buff, bsize);
+		clock_gettime(CLOCK_REALTIME, &te);
+		start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
+		end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
+		bw = (double)bsize * n/((double)(end - start)/1e9);
+		bw = bw / 1e6;
+		printf("veo_udma_recv returned: %lu bw=%f7.0 MB/s\n", res, bw);
+	}
 
 finish:
-	for (i = 0; i < udma_num_peers; i++)
-		rc = veo_udma_peer_fini(i);
+	veo_udma_peer_fini(peer_id);
 
 	veo_finish();
 	exit(0);

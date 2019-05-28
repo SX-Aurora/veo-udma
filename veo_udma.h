@@ -3,7 +3,7 @@
 
 #define UDMA_MAX_PROCS 8
 #define UDMA_MAX_PEERS 64
-#define UDMA_MAX_SPLIT 32
+#define UDMA_MAX_SPLIT 64
 #define UDMA_BUFF_LEN (64 * 1024 * 1024)
 
 #define UDMA_DELAY_PEEK 1
@@ -54,5 +54,11 @@ struct ve_udma_peer {
 	struct ve_udma_comm send;
 	struct ve_udma_comm recv;
 };
+
+int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
+		       struct veo_thr_ctxt *ctx, uint64_t lib_handle);
+int veo_udma_peer_fini(int peer_id);
+size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len);
+size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t len);
 
 #endif /* VEO_UDMA_COMM_INCLUDE */
