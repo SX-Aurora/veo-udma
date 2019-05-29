@@ -18,7 +18,7 @@
 #include <vedma.h>
 
 #include "ve_inst.h"
-#include "veo_udma_comm.h"
+#include "veo_udma.h"
 
 int shm_key, shm_segid;
 uint64_t shm_vehva = 0;		// VEHVA of remote shared memory segment

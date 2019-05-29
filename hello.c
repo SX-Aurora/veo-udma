@@ -17,7 +17,7 @@
 #include <sys/stat.h>
 
 #include <ve_offload.h>
-#include "veo_udma_comm.h"
+#include "veo_udma.h"
 
 /* variables for VEO demo */
 int ve_node_number = 0;

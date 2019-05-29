@@ -17,7 +17,7 @@ libveo_udma_ve.o: libveo_udma_ve.c veo_udma.h
 libveo_udma_ve.so: libveo_udma_ve.o
 	$(NCC) -Wl,-zdefs -shared -fpic -pthread -g -o $@ $< -lveio -lsysve -lm -lc -lpthread
 
-hello: hello.c veo_udma_comm.h libveo_udma.so
+hello: hello.c veo_udma.h libveo_udma.so
 	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
 		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
 		-lveo -lveo_udma
