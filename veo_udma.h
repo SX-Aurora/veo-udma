@@ -16,7 +16,9 @@
 #endif
 #define eprintf(args...) fprintf(stderr, args)
 
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 struct vh_udma_proc {
 	int ve_node_id;
 	int count;		// how often used/ referenced
@@ -60,5 +62,9 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 int veo_udma_peer_fini(int peer_id);
 size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len);
 size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* VEO_UDMA_COMM_INCLUDE */
