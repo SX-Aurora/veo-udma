@@ -78,7 +78,7 @@ static int vhshm_register(int key, size_t size)
 		return -ENOMEM;
 	}
 	if (shm_vehva == (uint64_t)-1) {
-		eprintf("VE: (shm_vehva == -1)\n");
+		eprintf("VE: failed to attach to shm segment %d, shm_vehva=-1\n", shm_segid);
 		return -ENOMEM;
 	}
 	return 0;
@@ -93,8 +93,10 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	struct ve_udma_peer *ve_up;
 
 	ve_up = (struct ve_udma_peer *)malloc(sizeof(struct ve_udma_peer));
-	if (ve_up == NULL)
+	if (ve_up == NULL) {
+		eprintf("VE: malloc failed for peer struct.\n");
 		return -ENOMEM;
+	}
 	dprintf("ve allocated ve_up=%p\n", (void *)ve_up);
 	udma_peer = ve_up;
 
@@ -104,6 +106,7 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 		if (err) {
 			free(udma_peer);
 			udma_peer = NULL;
+			eprintf("VE: vh_shm_register failed, err=%d.\n", err);
 			return err;
 		}
 	}
@@ -129,14 +132,14 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	// allocate read and write buffers in one call
 	posix_memalign((void **)&buff_base, align_64mb, buff_size);
 	if (buff_base == NULL) {
-		eprintf("allocating ve udma buffer failed! buffsize=%lu\n", buff_size);
+		eprintf("VE: allocating udma buffer failed! buffsize=%lu\n", buff_size);
 		return -ENOMEM;
 	}
 	dprintf("ve allocated buff at %p\n", buff_base);
 	//busy_sleep_us(1*1000*1000);
 	buff_base_vehva = ve_register_mem_to_dmaatb(buff_base, buff_size);
 	if (buff_base_vehva == (uint64_t)-1) {
-		eprintf("mapping ve udma buffer failed! buffsize=%lu\n", buff_size);
+		eprintf("VE: mapping udma buffer failed! buffsize=%lu\n", buff_size);
 		return -ENOMEM;
 	}
 	dprintf("ve_register_mem_to_dmaatb succeeded for %p\n", buff_base);
@@ -158,13 +161,13 @@ void ve_udma_fini()
 	// unregister local buffer from DMAATB
 	err = ve_unregister_mem_from_dmaatb(udma_peer->send.buff_vehva);
 	if (err)
-		eprintf("Failed to unregister local buffer from DMAATB\n");
+		eprintf("VE: Failed to unregister local buffer from DMAATB\n");
 
 	// detach VH sysV shm segment
 	if (shm_remote_addr) {
 		err = vh_shmdt(shm_remote_addr);
 		if (err)
-			eprintf("Failed to detach from VH sysV shm\n");
+			eprintf("VE: Failed to detach from VH sysV shm\n");
 		else {
 			shm_remote_addr = NULL;
 			shm_vehva = 0;
@@ -200,7 +203,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 			if (err) {
 				if (err == -EAGAIN)
 					continue;
-				printf("ve_dma_post has failed! err = %d\n", err);
+				eprintf("VE: ve_dma_post has failed! err = %d\n", err);
 				ve_inst_shm(SPLITLEN(ve_up->send.len_vehva, j), 0);
 				break;
 			}
@@ -221,7 +224,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;
 			} else if (err != -EAGAIN) {
-				printf("ve_dma_poll returned an error: 0x%x\n", err);
+				eprintf("VE: ve_dma_poll returned an error: 0x%x\n", err);
 				break;
 			}
 		}
@@ -251,7 +254,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			if (err) {
 				if (err == -EAGAIN)
 					continue;
-				printf("ve_dma_post has failed! err = %d\n", err);
+				eprintf("VE: ve_dma_post has failed! err = %d\n", err);
 				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, j), 0);
 				break;
 			}
@@ -275,7 +278,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;
 			} else if (err != -EAGAIN) {
-				printf("ve_dma_poll returned an error: 0x%x\n", err);
+				eprintf("VE: ve_dma_poll returned an error: 0x%x\n", err);
 				break;
 			}
 		}

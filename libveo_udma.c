@@ -31,14 +31,17 @@ static int vh_shm_init(int key, size_t size, void **local_addr)
 	struct shmid_ds ds;
 	
 	int segid = shmget(key, size, IPC_CREAT | SHM_HUGETLB | S_IRWXU); 
-	if (segid == -1)
-		return -1;
+	if (segid == -1) {
+		eprintf("[vh_shm_init] shmget failed: %s\n", strerror(errno));
+		return -errno;
+	}
 	*local_addr = shmat(segid, NULL, 0);
 	dprintf("local_addr: %p\n", *local_addr);
 	if (*local_addr == (void *) -1) {
-		eprintf("shmat failed!? releasing shm segment. key=%d\n", key);
+		eprintf("[vh_shm_init] shmat failed: %s\n"
+			"Releasing shm segment. key=%d\n", strerror(errno), key);
 		shmctl(segid, IPC_RMID, NULL);
-		segid = -1;
+		segid = -errno;
 	}
 	return segid;
 }
@@ -50,14 +53,15 @@ static int vh_shm_fini(int segid, void *local_addr)
 	if (local_addr != (void *)-1) {
 		err = shmdt(local_addr);
 		if (err < 0) {
-			eprintf("Failed to detach from SHM segment at %p\n", local_addr);
+			eprintf("[vh_shm_fini] Failed to detach from SHM segment %d at %p\n",
+				segid, local_addr);
 			return err;
 		}
 	}
 	if (segid != -1) {
 		err = shmctl(segid, IPC_RMID, NULL);
 		if (err < 0)
-			eprintf("Failed to remove SHM segment ID %d\n", segid);
+			eprintf("[vh_shm_fini] Failed to remove SHM segment ID %d\n", segid);
 	}
 	return err;
 }
@@ -65,8 +69,6 @@ static int vh_shm_fini(int segid, void *local_addr)
 static void vh_udma_proc_setup(struct vh_udma_proc *pp, int ve_node_id,
 			       struct veo_proc_handle *proc, uint64_t lib_handle)
 {
-	int err;
-
 	pp->ve_node_id = ve_node_id;
 	pp->count = 0;
 	pp->proc = proc;
@@ -90,7 +92,8 @@ static int ve_udma_setup(struct vh_udma_peer *up)
 	req = veo_call_async(up->ctx, udma_procs[up->proc_id]->ve_udma_init, argp);
 	err = veo_call_wait_result(up->ctx, req, (uint64_t *)&res);
 	if (err)
-		eprintf("ve_udma_setup veo_call_wait_result err=%d\n", err);
+		eprintf("veo-udma setup on VE has failed.\n"
+			"ve_udma_setup veo_call_wait_result err=%d\n", err);
 	veo_args_free(argp);
 	return err != 0 ? err : (int)res;
 }
@@ -106,7 +109,8 @@ static int ve_udma_close(struct vh_udma_peer *up)
 	req = veo_call_async(up->ctx, udma_procs[up->proc_id]->ve_udma_fini, argp);
 	err = veo_call_wait_result(up->ctx, req, (uint64_t *)&res);
 	if (err)
-		eprintf("veo_call_wait_result err=%d\n", err);
+		eprintf("veo-udma finish failed on VE side.\n"
+			"veo_call_wait_result err=%d\n", err);
 	veo_args_free(argp);
 	return err != 0 ? err : (int)res;
 }
@@ -137,12 +141,20 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		proc_id = udma_num_procs++;
 		struct vh_udma_proc *pp = \
 			(struct vh_udma_proc *)malloc(sizeof(struct vh_udma_proc));
+		if (!pp) {
+			eprintf("veo_udma_peer_init malloc failed.\n");
+			return -ENOMEM;
+		}
 		vh_udma_proc_setup(pp, ve_node_id, proc, lib_handle);
 		udma_procs[proc_id] = pp;
 	}
 	udma_procs[proc_id]->count++;
 
 	up = (struct vh_udma_peer *)malloc(sizeof(struct vh_udma_peer));
+	if (!up) {
+		eprintf("veo_udma_peer_init malloc peer struct failed.\n");
+		return -ENOMEM;
+	}
 	peer_id = udma_num_peers++;
 	udma_peers[peer_id] = up;
 	up->proc_id = proc_id;
