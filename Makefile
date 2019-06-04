@@ -3,7 +3,11 @@ GCC = gcc
 
 VEOSTATIC = -DVEO_STATIC=1
 
-ALL: libveo_udma.so hello veorun_static #libveo_udma_ve.so
+ifdef VEOSTATIC
+ALL: libveo_udma.so hello veorun_static
+else
+ALL: libveo_udma.so hello libveo_udma_ve.so
+endif
 
 libveo_udma.o: libveo_udma.c veo_udma.h
 	$(GCC) -g -fpic -pthread -o $@ -c $< -I/opt/nec/ve/veos/include
