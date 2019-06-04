@@ -113,7 +113,9 @@ int main(int argc, char **argv)
 
 	local_buff = malloc(bsize);
 	// touch local buffer
-	memset(local_buff, 65, bsize);
+	//memset(local_buff, 65, bsize);
+	for (i = 0; i < bsize/sizeof(long); i++)
+		((long *)local_buff)[i] = (long)i;
 		
 	rc = veo_alloc_mem(proc, &ve_buff, bsize);
 	if (rc != 0) {
@@ -140,6 +142,9 @@ int main(int argc, char **argv)
 		printf("veo_udma_send returned: %lu bw=%f7.0 MB/s\n", res, bw);
 	}
 
+	//overwrite local buffer
+	memset(local_buff, 65, bsize);
+
 	if (do_recv) {
 		printf("calling veo_udma_recv\n");
 		clock_gettime(CLOCK_REALTIME, &ts);
@@ -151,6 +156,21 @@ int main(int argc, char **argv)
 		bw = (double)bsize * n/((double)(end - start)/1e9);
 		bw = bw / 1e6;
 		printf("veo_udma_recv returned: %lu bw=%f7.0 MB/s\n", res, bw);
+	}
+
+	if (do_send && do_recv) {
+		err = 0;
+		// check local_buff content
+		for (i = 0; i < bsize/sizeof(long); i++) {
+			if (((long *)local_buff)[i] != (long)i) {
+				err = 1;
+				break;
+			}
+		}
+		if (err)
+			printf("Verify error: buffer contains wrong data\n");
+		else
+			printf("Received data is identical with the sent buffer.\n");
 	}
 
 finish:
