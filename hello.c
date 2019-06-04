@@ -159,15 +159,15 @@ int main(int argc, char **argv)
 	}
 
 	if (do_send && do_recv) {
-		err = 0;
+		rc = 0;
 		// check local_buff content
 		for (i = 0; i < bsize/sizeof(long); i++) {
 			if (((long *)local_buff)[i] != (long)i) {
-				err = 1;
+				rc = 1;
 				break;
 			}
 		}
-		if (err)
+		if (rc)
 			printf("Verify error: buffer contains wrong data\n");
 		else
 			printf("Received data is identical with the sent buffer.\n");
