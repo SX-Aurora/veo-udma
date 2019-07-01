@@ -194,12 +194,24 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *srcp = (char *)src;
 	uint64_t srcr[UDMA_MAX_SPLIT];
+	long ts = getusrcc();
 	ve_dma_handle_t handle[UDMA_MAX_SPLIT];
 
 	j = 0; jr = -1;
 	while(lenp > 0 || (jr >= 0 && tlenr[jr] > 0)) {
 		if (tlenr[j] == 0 && lenp > 0) {
-			while(ve_inst_lhm(SPLITLEN(ve_up->send.len_vehva, j)) > 0);
+			err = 0;
+			while(ve_inst_lhm(SPLITLEN(ve_up->send.len_vehva, j)) > 0) {
+				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
+					eprintf("VE: timeout waiting for VH recv. "
+						"len=%u of %u, split=%d, split_sz=%u\n",
+						lenp, len, split, split_size);
+					err = -ETIME;
+					break;
+				}
+			}
+			if (err)
+				break;
 			tlen = MIN(split_size, lenp);
 			memcpy(SPLITBUFF(ve_up->send.buff, j, split_size), (void *)srcp, tlen);
 
@@ -230,9 +242,19 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 				ve_inst_shm(SPLITLEN(ve_up->send.len_vehva, jr), tlenr[jr]);
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;
+				ts = getusrcc();
 			} else if (err != -EAGAIN) {
 				eprintf("VE: ve_dma_poll returned an error: 0x%x\n", err);
 				break;
+			} else {
+				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
+					eprintf("VE: timeout waiting for DMA descriptor. "
+						"len=%u of %u, split=%d, split_sz=%u, "
+						"jr=%d, tlen=%u\n",
+						lenp, len, split, split_size, jr, tlenr[jr]);
+					err = -ETIME;
+					break;
+				}
 			}
 		}
 	}
@@ -247,12 +269,13 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *dstp = (char *)dst;
 	uint64_t dstr[UDMA_MAX_SPLIT];
-	uint64_t ts = getusrcc();
+	long ts = getusrcc();
 	ve_dma_handle_t handle[UDMA_MAX_SPLIT];
 
 	j = 0; jr = -1;
 	while(lenp > 0 || (jr >= 0 && tlenr[jr] > 0)) {
 		if (tlenr[j] == 0 && lenp > 0) {
+			err = 0;
 			// wait for len signal to be set
 			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0) {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
@@ -262,7 +285,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 					err = -ETIME;
 					break;
 				}
-			};
+			}
 			if (err)
 				break;
 			// dma from shm to buff

@@ -50,6 +50,7 @@ static int vh_shm_fini(int segid, void *local_addr)
 {
 	int err = 0;
 
+        dprintf("vh_shm_fini segid=%d\n", segid);
 	if (local_addr != (void *)-1) {
 		err = shmdt(local_addr);
 		if (err < 0) {
@@ -63,6 +64,7 @@ static int vh_shm_fini(int segid, void *local_addr)
 		if (err < 0)
 			eprintf("[vh_shm_fini] Failed to remove SHM segment ID %d\n", segid);
 	}
+        dprintf("vh_shm_fini shmctl RMID returned %d\n", err);
 	return err;
 }
 
