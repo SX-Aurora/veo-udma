@@ -34,7 +34,14 @@ struct ve_udma_peer *udma_peer;	// this peer's UDMA comm struct
 
 
 static inline long getusrcc() {
-        asm("smir %s0, %usrcc");
+	asm("smir %s0, %usrcc");
+}
+
+/* following functions imply that the VE runs with 1400MHz,
+   for their purpose the exact frequency doesn't actually matter */
+static inline int64_t usrcc_diff_us(long ts)
+{
+	return (getusrcc() - ts) / 1400;
 }
 
 static inline void busy_sleep_us(long us)
@@ -240,13 +247,24 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *dstp = (char *)dst;
 	uint64_t dstr[UDMA_MAX_SPLIT];
+	uint64_t ts = getusrcc();
 	ve_dma_handle_t handle[UDMA_MAX_SPLIT];
 
 	j = 0; jr = -1;
 	while(lenp > 0 || (jr >= 0 && tlenr[jr] > 0)) {
 		if (tlenr[j] == 0 && lenp > 0) {
 			// wait for len signal to be set
-			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0);
+			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0) {
+				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
+					eprintf("VE: timeout waiting for tlen. "
+						"len=%u of %u, split=%d, split_sz=%u\n",
+						lenp, len, split, split_size);
+					err = -ETIME;
+					break;
+				}
+			};
+			if (err)
+				break;
 			// dma from shm to buff
 			err = ve_dma_post(SPLITADDR(ve_up->recv.buff_vehva, j, split_size),
 					  SPLITADDR(ve_up->recv.shm_vehva, j, split_size),
@@ -277,9 +295,19 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, jr), 0);
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;
+				ts = getusrcc();
 			} else if (err != -EAGAIN) {
 				eprintf("VE: ve_dma_poll returned an error: 0x%x\n", err);
 				break;
+			} else {
+				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
+					eprintf("VE: timeout waiting for DMA descriptor. "
+						"len=%u of %u, split=%d, split_sz=%u, "
+						"jr=%d, tlen=%u\n",
+						lenp, len, split, split_size, jr, tlenr[jr]);
+					err = -ETIME;
+					break;
+				}
 			}
 		}
 	}

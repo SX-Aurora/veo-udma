@@ -7,6 +7,7 @@
 #define UDMA_BUFF_LEN (64 * 1024 * 1024)
 
 #define UDMA_DELAY_PEEK 1
+#define UDMA_TIMEOUT_US (10 * 1000000)
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
