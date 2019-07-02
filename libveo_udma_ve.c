@@ -189,8 +189,8 @@ void ve_udma_fini()
 size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 {
 	int j, jr, err;
-	size_t lenp = len, tlen;
-	size_t tlenr[UDMA_MAX_SPLIT] = {0};
+	int64_t lenp = len, tlen;
+	int64_t tlenr[UDMA_MAX_SPLIT] = {0};
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *srcp = (char *)src;
 	uint64_t srcr[UDMA_MAX_SPLIT];
@@ -204,7 +204,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 			while(ve_inst_lhm(SPLITLEN(ve_up->send.len_vehva, j)) > 0) {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for VH recv. "
-						"len=%u of %u, split=%d, split_sz=%u\n",
+						"len=%ul of %ul, split=%d, split_sz=%ul\n",
 						lenp, len, split, split_size);
 					err = -ETIME;
 					break;
@@ -264,8 +264,8 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 {
 	int j, jr, err;
-	size_t lenp = len, tlen;
-	size_t tlenr[UDMA_MAX_SPLIT] = {0};
+	int64_t lenp = len, tlen;
+	int64_t tlenr[UDMA_MAX_SPLIT] = {0};
 	struct ve_udma_peer *ve_up = udma_peer;
 	char *dstp = (char *)dst;
 	uint64_t dstr[UDMA_MAX_SPLIT];
@@ -280,7 +280,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0) {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for tlen. "
-						"len=%u of %u, split=%d, split_sz=%u\n",
+						"len=%l of %ul, split=%d, split_sz=%ul\n",
 						lenp, len, split, split_size);
 					err = -ETIME;
 					break;
@@ -288,6 +288,13 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			}
 			if (err)
 				break;
+			if (tlen > lenp) {
+				eprintf("VE: stopping veo-udma: something's wrong:"
+					" tlen=%l > lenp=%l\n",
+					tlen, lenp);
+				err = -EINVAL;
+				break;
+			}
 			// dma from shm to buff
 			err = ve_dma_post(SPLITADDR(ve_up->recv.buff_vehva, j, split_size),
 					  SPLITADDR(ve_up->recv.shm_vehva, j, split_size),
