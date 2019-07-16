@@ -280,7 +280,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0) {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for tlen. "
-						"len=%ld of %ld, split=%d, split_sz=%lu\n",
+						"len=%ld of %lu, split=%d, split_sz=%lu\n",
 						lenp, len, split, split_size);
 					err = -ETIME;
 					break;
@@ -290,8 +290,9 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 				break;
 			if (tlen > lenp) {
 				eprintf("VE: stopping veo-udma: something's wrong:"
-					" tlen=%ld > lenp=%ld, j=%d, jr=%d\n",
-					tlen, lenp, j, jr);
+					" tlen=%ld > lenp=%ld, j=%d, jr=%d,"
+                                        " len=%lu, split=%d, split_sz=%lu\n",
+					tlen, lenp, j, jr, len, split, split_size);
 				err = -EINVAL;
 				break;
 			}
