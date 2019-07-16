@@ -15,7 +15,7 @@ static inline void ve_inst_fenceLF(void)
 
 static inline uint64_t ve_inst_lhm(void *vehva)
 {
-    uint64_t ret;
+    uint64_t volatile ret;
     asm volatile ("lhm.l %0,0(%1)":"=r"(ret):"r"(vehva));
     return ret;
 }

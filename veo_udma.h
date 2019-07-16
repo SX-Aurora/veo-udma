@@ -1,6 +1,8 @@
 #ifndef VEO_UDMA_COMM_INCLUDE
 #define VEO_UDMA_COMM_INCLUDE
 
+#include <pthread.h>
+
 #define UDMA_MAX_PROCS 8
 #define UDMA_MAX_PEERS 64
 #define UDMA_MAX_SPLIT 64
@@ -32,7 +34,7 @@ struct vh_udma_proc {
 };
 	
 struct vh_udma_comm {
-	size_t *len;		// address of length mailbox
+	volatile size_t *len;		// address of length mailbox
 	size_t buff_len;	// total buffer space length
 	void *shm;		// buffer inside the shared memory segment
 };
@@ -44,6 +46,7 @@ struct vh_udma_peer {
 	int shm_key, shm_segid;
 	size_t shm_size;
 	void *shm_addr;
+	pthread_mutex_t lock;
 };
 
 struct ve_udma_comm {
@@ -56,6 +59,7 @@ struct ve_udma_comm {
 struct ve_udma_peer {
 	struct ve_udma_comm send;
 	struct ve_udma_comm recv;
+	pthread_mutex_t lock;
 };
 
 int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,

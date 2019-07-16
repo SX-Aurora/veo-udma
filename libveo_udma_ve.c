@@ -290,8 +290,8 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 				break;
 			if (tlen > lenp) {
 				eprintf("VE: stopping veo-udma: something's wrong:"
-					" tlen=%ld > lenp=%ld\n",
-					tlen, lenp);
+					" tlen=%ld > lenp=%ld, j=%d, jr=%d\n",
+					tlen, lenp, j, jr);
 				err = -EINVAL;
 				break;
 			}

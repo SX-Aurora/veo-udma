@@ -180,6 +180,7 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		- (UDMA_MAX_SPLIT * sizeof(size_t) + 2 * sizeof(uint64_t));
 	up->recv.buff_len = mb_offs - (char *)up->recv.shm;
 	up->recv.len = (size_t *)mb_offs;
+        pthread_mutex_init(&up->lock, NULL);
 	
 	rc = ve_udma_setup(up);
 	return rc ? rc : peer_id;
@@ -322,7 +323,10 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		eprintf("veo_udma_recv ctx not found!\n");
 		return 0;
 	}
-
+	if (pthread_mutex_trylock(&up->lock) != 0) {
+		eprintf("veo_udma_send found mutex locked!?\n");
+		return 0;
+	}
 	split = calc_split_send(len, &split_size);
 
 	struct veo_args *argp = veo_args_alloc();
@@ -341,7 +345,7 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		lenp -= tlen;
 		i = (i + 1) % split;
 		// poll until len field is set to 0
-		while (*(up->send.len + i) > 0) {
+		while (*(volatile size_t *)(up->send.len + i) > 0) {
 			// peek at request, did it bail out?
 			rc = veo_call_peek_result(ctx, req, &retval);
 			if (rc != VEO_COMMAND_UNFINISHED &&	\
@@ -357,6 +361,7 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		rc = veo_call_wait_result(ctx, req, &retval);
 	}
 	veo_args_free(argp);
+	pthread_mutex_unlock(&up->lock);
 	return (size_t)retval;
 }
 
@@ -381,6 +386,10 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 		printf("veo_udma_recv ctx not found!\n");
 		return 0;
 	}
+	if (pthread_mutex_trylock(&up->lock) != 0) {
+		eprintf("veo_udma_recv found mutex locked!?\n");
+		return 0;
+	}
 
 	split = calc_split_recv(len, &split_size);
 
@@ -403,7 +412,7 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 		if (err)
 			break;
 		memcpy((void *)dstp, SPLITBUFF(up->recv.shm, j, split_size), tlen);
-		*(up->recv.len + j) = 0;
+		*(volatile size_t *)(up->recv.len + j) = 0;
 		dstp += tlen;
 		lenp -= tlen;
 		j = (j + 1) % split;
@@ -412,5 +421,6 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 		rc = veo_call_wait_result(ctx, req, &retval);
 	}
 	veo_args_free(argp);
+	pthread_mutex_unlock(&up->lock);
 	return (size_t)retval;
 }
