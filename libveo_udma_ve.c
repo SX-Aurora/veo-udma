@@ -204,7 +204,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 			while(ve_inst_lhm(SPLITLEN(ve_up->send.len_vehva, j)) > 0) {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for VH recv. "
-						"len=%ul of %ul, split=%d, split_sz=%ul\n",
+						"len=%ld of %lu, split=%d, split_sz=%lu\n",
 						lenp, len, split, split_size);
 					err = -ETIME;
 					break;
@@ -249,8 +249,8 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 			} else {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for DMA descriptor. "
-						"len=%u of %u, split=%d, split_sz=%u, "
-						"jr=%d, tlen=%u\n",
+						"len=%ld of %lu, split=%d, split_sz=%lu, "
+						"jr=%d, tlen=%ld\n",
 						lenp, len, split, split_size, jr, tlenr[jr]);
 					err = -ETIME;
 					break;
@@ -280,7 +280,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0) {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for tlen. "
-						"len=%l of %ul, split=%d, split_sz=%ul\n",
+						"len=%ld of %ld, split=%d, split_sz=%lu\n",
 						lenp, len, split, split_size);
 					err = -ETIME;
 					break;
@@ -290,7 +290,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 				break;
 			if (tlen > lenp) {
 				eprintf("VE: stopping veo-udma: something's wrong:"
-					" tlen=%l > lenp=%l\n",
+					" tlen=%ld > lenp=%ld\n",
 					tlen, lenp);
 				err = -EINVAL;
 				break;
@@ -332,8 +332,8 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			} else {
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for DMA descriptor. "
-						"len=%u of %u, split=%d, split_sz=%u, "
-						"jr=%d, tlen=%u\n",
+						"len=%ld of %lu, split=%d, split_sz=%lu, "
+						"jr=%d, tlen=%ld\n",
 						lenp, len, split, split_size, jr, tlenr[jr]);
 					err = -ETIME;
 					break;
