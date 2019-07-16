@@ -339,7 +339,7 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 	while (lenp > 0) {
 		tlen = MIN(split_size, lenp);
 		mp = memcpy(SPLITBUFF(up->send.shm, i, split_size), (void *)srcp, tlen);
-		*(up->send.len + i) = tlen;
+		*(volatile size_t *)(up->send.len + i) = tlen;
 		dstp += tlen;
 		srcp += tlen;
 		lenp -= tlen;
