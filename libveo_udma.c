@@ -260,9 +260,9 @@ static int calc_split_send(size_t len, size_t *split_size)
 			return split;
 		}
 
-	for (i = 1; i < num_tune_send; i++) {
+	for (i = 0; i < num_tune_send - 1; i++) {
 		if (len >= tune_send[i].transfer)
-			itune = i;
+			itune = i + 1;
 		else
 			break;
 	}
@@ -289,9 +289,9 @@ static int calc_split_recv(size_t len, size_t *split_size)
 			return split;
 		}
 	
-	for (i = 1; i < num_tune_recv; i++) {
+	for (i = 0; i < num_tune_recv - 1; i++) {
 		if (len >= tune_recv[i].transfer)
-			itune = i;
+			itune = i + 1;
 		else
 			break;
 	}
