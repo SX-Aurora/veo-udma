@@ -320,10 +320,10 @@ static int calc_split_recv(size_t len, size_t *split_size)
 */
 size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, int pack)
 {
-	size_t tlen, lenp = len, split_size;
+	size_t tlen, lenp, split_size;
 	uint64_t req, retval = 0, dstp = dst;
 	int i, rc, split, err = 0;
-	char *srcp = (char *)src;
+	char *srcp;
 	void *mp;
 	struct vh_udma_peer *up = NULL;
 
@@ -342,11 +342,18 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		return 0;
 	}
 	if (pack) {
+		len = up->pack.len;
+		src = up->pack.buff;
 		split = 1;
 		split_size = len;
 	} else
 		split = calc_split_send(len, &split_size);
 
+	if (len == 0)
+		goto out;
+
+	srcp = (char *)src;
+	lenp = len;
 	struct veo_args *argp = veo_args_alloc();
 	veo_args_set_u64(argp, 0, (uint64_t)dst);
 	veo_args_set_u64(argp, 1, (uint64_t)len);
@@ -380,6 +387,11 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		rc = veo_call_wait_result(ctx, req, &retval);
 	}
 	veo_args_free(argp);
+	if (pack) {
+		up->pack.len = 0;
+		retval = len - retval;
+	}
+out:
 	pthread_mutex_unlock(&up->lock);
 	return (size_t)retval;
 }
@@ -454,7 +466,7 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 */
 int veo_udma_pack(int peer, void *src, uint64_t dst, size_t len)
 {
-	int rc;
+	int rc = 0;
 	size_t tlen;
 	struct vh_udma_peer *up;
 
@@ -464,32 +476,39 @@ int veo_udma_pack(int peer, void *src, uint64_t dst, size_t len)
 	}
 	up = udma_peers[peer];
 
+	pthread_mutex_lock(&up->lock);
 	/* buffer large enough to be sent directly? */
 	if (len >= UDMA_PACK_MAX) {
+		pthread_mutex_unlock(&up->lock);
 		tlen = veo_udma_send(up->ctx, src, dst, len, 0);
 		if (tlen != len) {
 			eprintf("veo_udma_pack: direct send failed, %lu of %lu\n", tlen, len);
-			return -EPIPE;
+			rc = -EPIPE;
 		}
-		return 0;
+		goto done_nolock;
 	}
 
 	/* current request too large?
 	   send what we have in pack buffer and pack current req. */
 	if (_buffer_pack(&up->pack, src, dst, len) < 0) {
 		/* send */
+		pthread_mutex_unlock(&up->lock);
 		if ((rc = veo_udma_pack_commit(peer)) != 0) {
 			eprintf("veo_udma_pack: commit failed, rc=%d\n", rc);
-			return rc;
+			goto done_nolock;
 		}
-		return _buffer_pack(&up->pack, src, dst, len);
+		pthread_mutex_lock(&up->lock);
+		rc = _buffer_pack(&up->pack, src, dst, len);
 	}
-	return 0;
+done:
+	pthread_mutex_unlock(&up->lock);
+done_nolock:
+	return rc;
 }
 
 int veo_udma_pack_commit(int peer)
 {
-	size_t len, slen;
+	size_t res;
 	struct vh_udma_peer *up;
 
 	if (peer < 0 || peer >= udma_num_peers) {
@@ -497,11 +516,7 @@ int veo_udma_pack_commit(int peer)
 		return -EINVAL;
 	}
 	up = udma_peers[peer];
-	len = up->pack.len;
 
-	slen = veo_udma_send(up->ctx, up->pack.buff, 0, len, 1);
-	up->pack.len = 0;
-	if (slen != len)
-		return -EPIPE;
-	return 0;
+	/* src and len are set in _send() while the mutex is held */
+	return veo_udma_send(up->ctx, NULL, 0, 0, 1);
 }

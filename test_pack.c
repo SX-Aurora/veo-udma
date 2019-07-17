@@ -116,7 +116,9 @@ int main(int argc, char **argv)
         clock_gettime(CLOCK_REALTIME, &ts);
 	/* packing data multiple times */
         for (i = 0; i < bsize * 4; i += 256) {
-		res = veo_udma_pack(peer_id, &local_buff[i % bsize], ve_buff + (i % bsize) * sizeof(long), 256 * sizeof(long));
+		res = veo_udma_pack(peer_id, &local_buff[i % bsize],
+				    ve_buff + (i % bsize) * sizeof(long),
+				    256 * sizeof(long));
 		printf("veo_udma_pack: returned %d\n", res);
 	}
         res = veo_udma_pack_commit(peer_id);
