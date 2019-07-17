@@ -80,22 +80,11 @@ int main(int argc, char **argv)
 {
 	int i, rc, n, peer_id;
 	uint64_t ve_buff;
-	void *local_buff;
-	size_t bsize = 1024*1024, res;
+	long *local_buff, *local_buff2;
+	size_t bsize = 1024, res;
 	struct timespec ts, te;
 	uint64_t start, end;
 	double bw;
-	int do_send = 1, do_recv = 1;
-	
-	if (argc == 2)
-		bsize = atol(argv[1]);
-	else if (argc == 3) {
-		if (strcmp(argv[1], "send") == 0)
-			do_recv = 0;
-		if (strcmp(argv[1], "recv") == 0)
-			do_send = 0;
-		bsize = atol(argv[2]);
-	}
 
 	rc = veo_init();
 	if (rc != 0)
@@ -111,67 +100,55 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	local_buff = malloc(bsize);
+	local_buff = (long *)malloc(bsize * sizeof(long));
+	local_buff2 = (long *)malloc(bsize * sizeof(long));
 	// touch local buffer
-	//memset(local_buff, 65, bsize);
-	for (i = 0; i < bsize/sizeof(long); i++)
-		((long *)local_buff)[i] = (long)i;
+	for (i = 0; i < bsize; i++)
+		local_buff[i] = (long)i;
 		
-	rc = veo_alloc_mem(proc, &ve_buff, bsize);
+	rc = veo_alloc_mem(proc, &ve_buff, bsize * sizeof(long));
 	if (rc != 0) {
 		printf("veo_alloc_mem failed with rc=%d\n", rc);
 		goto finish;
 	}
 
-	if (bsize < 512 * 1024)
-		n = (int)(100 * 1.e6 / (double)bsize);
-	else
-		n = (int)(5.0 * 1.e9 / (double)bsize);
-	n > 0 ? n : 1;
-
-	if (do_send) {
-		printf("calling veo_udma_send\n");
-		clock_gettime(CLOCK_REALTIME, &ts);
-		for (i = 0; i < n; i++)
-                  res = veo_udma_send(ctx, local_buff, ve_buff, bsize, 0);
-		clock_gettime(CLOCK_REALTIME, &te);
-		start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
-		end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
-		bw = (double)bsize * n/((double)(end - start)/1e9);
-		bw = bw / 1e6;
-		printf("veo_udma_send returned: %lu bw=%f7.0 MB/s\n", res, bw);
+        printf("calling veo_udma_pack\n");
+        clock_gettime(CLOCK_REALTIME, &ts);
+	/* packing data multiple times */
+        for (i = 0; i < bsize * 4; i += 256) {
+		res = veo_udma_pack(peer_id, &local_buff[i % bsize], ve_buff + (i % bsize) * sizeof(long), 256 * sizeof(long));
+		printf("veo_udma_pack: returned %d\n", res);
 	}
+        res = veo_udma_pack_commit(peer_id);
+        clock_gettime(CLOCK_REALTIME, &te);
+        start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
+        end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
+        bw = (double)bsize * n/((double)(end - start)/1e9);
+        bw = bw / 1e6;
+        printf("bw=%f7.0 MB/s\n", res, bw);
 
-	//overwrite local buffer
-	memset(local_buff, 65, bsize);
+        printf("calling veo_udma_recv\n");
+        clock_gettime(CLOCK_REALTIME, &ts);
+        res = veo_udma_recv(ctx, ve_buff, local_buff2, bsize * sizeof(long));
+        clock_gettime(CLOCK_REALTIME, &te);
+        start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
+        end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
+        bw = (double)bsize * n/((double)(end - start)/1e9);
+        bw = bw / 1e6;
+        printf("veo_udma_recv returned: %lu bw=%f7.0 MB/s\n", res, bw);
 
-	if (do_recv) {
-		printf("calling veo_udma_recv\n");
-		clock_gettime(CLOCK_REALTIME, &ts);
-		for (i = 0; i < n; i++)
-			res = veo_udma_recv(ctx, ve_buff, local_buff, bsize);
-		clock_gettime(CLOCK_REALTIME, &te);
-		start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
-		end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
-		bw = (double)bsize * n/((double)(end - start)/1e9);
-		bw = bw / 1e6;
-		printf("veo_udma_recv returned: %lu bw=%f7.0 MB/s\n", res, bw);
-	}
-
-	if (do_send && do_recv) {
-		rc = 0;
-		// check local_buff content
-		for (i = 0; i < bsize/sizeof(long); i++) {
-			if (((long *)local_buff)[i] != (long)i) {
-				rc = 1;
-				break;
-			}
+        rc = 0;
+        // check local_buff content
+        for (i = 0; i < bsize; i++) {
+		if (local_buff[i] != local_buff2[i]) {
+			rc = 1;
+			break;
 		}
-		if (rc)
-			printf("Verify error: buffer contains wrong data\n");
-		else
-			printf("Received data is identical with the sent buffer.\n");
 	}
+	if (rc)
+		printf("Verify error: buffer contains wrong data\n");
+	else
+		printf("Received data is identical with the sent buffer.\n");
 
 finish:
 	veo_udma_peer_fini(peer_id);

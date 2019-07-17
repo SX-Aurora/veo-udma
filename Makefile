@@ -4,9 +4,9 @@ GCC = gcc
 VEOSTATIC = -DVEO_STATIC=1
 
 ifdef VEOSTATIC
-ALL: libveo_udma.so hello veorun_static
+ALL: libveo_udma.so hello test_pack veorun_static
 else
-ALL: libveo_udma.so hello libveo_udma_ve.so
+ALL: libveo_udma.so hello test_pack libveo_udma_ve.so
 endif
 
 libveo_udma.o: libveo_udma.c veo_udma.h
@@ -22,6 +22,11 @@ libveo_udma_ve.so: libveo_udma_ve.o
 	$(NCC) -Wl,-zdefs -shared -fpic -pthread -g -o $@ $< -lveio -lsysve -lm -lc -lpthread
 
 hello: hello.c veo_udma.h libveo_udma.so
+	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
+		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
+		-lveo -lveo_udma
+
+test_pack: test_pack.c veo_udma.h libveo_udma.so
 	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
 		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
 		-lveo -lveo_udma

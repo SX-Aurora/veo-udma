@@ -33,7 +33,8 @@ struct ve_udma_peer *udma_peer;	// this peer's UDMA comm struct
 //__thread struct ve_udma_peer *udma_peer;	// this peer's UDMA comm struct
 
 
-static inline long getusrcc() {
+static inline long getusrcc()
+{
 	asm("smir %s0, %usrcc");
 }
 
@@ -261,7 +262,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 	return len - lenp;
 }
 
-size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
+size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pack)
 {
 	int j, jr, err;
 	int64_t lenp = len, tlen;
@@ -321,8 +322,15 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size)
 			err = ve_dma_poll(&handle[jr]);
 
 			if (err == 0) { // DMA completed normally
-				memcpy((void *)dstr[jr],
-				       SPLITBUFF(ve_up->recv.buff, jr, split_size), tlenr[jr]);
+				if (pack) {
+					err = _buffer_unpack(SPLITBUFF(ve_up->recv.buff, jr, split_size),
+							     (size_t)tlenr[jr]);
+					/* TODO: error handling */
+				} else {
+					memcpy((void *)dstr[jr],
+					       SPLITBUFF(ve_up->recv.buff, jr, split_size),
+					       tlenr[jr]);
+				}
 				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, jr), 0);
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;

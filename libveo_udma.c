@@ -154,13 +154,16 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 
 	up = (struct vh_udma_peer *)malloc(sizeof(struct vh_udma_peer));
 	if (!up) {
-		eprintf("veo_udma_peer_init malloc peer struct failed.\n");
+		eprintf("veo_udma_peer_init: malloc peer struct failed.\n");
 		return -ENOMEM;
 	}
 	peer_id = udma_num_peers++;
 	udma_peers[peer_id] = up;
+
 	up->proc_id = proc_id;
 	up->ctx = ctx;
+	
+	/* TODO: make key VE and core specific to avoid duplicate use of UDMA */
 	up->shm_key = getpid() * UDMA_MAX_PEERS + udma_num_peers;
 	up->shm_size = 2 * UDMA_BUFF_LEN;
 	up->shm_segid = vh_shm_init(up->shm_key, up->shm_size, &up->shm_addr);
@@ -180,6 +183,16 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		- (UDMA_MAX_SPLIT * sizeof(size_t) + 2 * sizeof(uint64_t));
 	up->recv.buff_len = mb_offs - (char *)up->recv.shm;
 	up->recv.len = (size_t *)mb_offs;
+
+	/* send pack buffer */
+	if ((up->pack.buff = malloc(up->send.buff_len)) == NULL) {
+		eprintf("veo_udma_peer_init: malloc packed buff failed.\n");
+		rc = vh_shm_fini(up->shm_segid, up->shm_addr);
+		return rc ? rc : -ENOMEM;
+	}
+	up->pack.buff_len = up->send.buff_len;
+	up->pack.len = 0;
+	
         pthread_mutex_init(&up->lock, NULL);
 	
 	rc = ve_udma_setup(up);
@@ -206,7 +219,8 @@ int veo_udma_peer_fini(int peer_id)
 		free(udma_procs[up->proc_id]);
 		udma_procs[up->proc_id] = NULL;
 	}
-	free(udma_peers[peer_id]);
+	free(up->pack.buff);
+	free(up);
 	udma_peers[peer_id] = NULL;
 	return 0;
 }
@@ -304,7 +318,7 @@ static int calc_split_recv(size_t len, size_t *split_size)
 /*
   Sent buffer from VH to VE
 */
-size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len)
+size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, int pack)
 {
 	size_t tlen, lenp = len, split_size;
 	uint64_t req, retval = 0, dstp = dst;
@@ -327,13 +341,18 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		eprintf("veo_udma_send found mutex locked!?\n");
 		return 0;
 	}
-	split = calc_split_send(len, &split_size);
+	if (pack) {
+		split = 1;
+		split_size = len;
+	} else
+		split = calc_split_send(len, &split_size);
 
 	struct veo_args *argp = veo_args_alloc();
 	veo_args_set_u64(argp, 0, (uint64_t)dst);
 	veo_args_set_u64(argp, 1, (uint64_t)len);
 	veo_args_set_i32(argp, 2, split);
 	veo_args_set_u64(argp, 3, (uint64_t)split_size);
+	veo_args_set_i32(argp, 4, pack);
 	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_recv, argp);
 	i = 0;
 	while (lenp > 0) {
@@ -383,7 +402,7 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 			break;
 		}
 	if (!up) {
-		printf("veo_udma_recv ctx not found!\n");
+		eprintf("veo_udma_recv ctx not found!\n");
 		return 0;
 	}
 	if (pthread_mutex_trylock(&up->lock) != 0) {
@@ -423,4 +442,66 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 	veo_args_free(argp);
 	pthread_mutex_unlock(&up->lock);
 	return (size_t)retval;
+}
+
+/*
+  Pack (small) buffer for sending from VH to VE.
+
+  Return 0 if successful, negative number in case of failure:
+  -EINVAL for invalid peer id,
+  -EPIPE if alrge direct buffer send failed,
+  ...
+*/
+int veo_udma_pack(int peer, void *src, uint64_t dst, size_t len)
+{
+	int rc;
+	size_t tlen;
+	struct vh_udma_peer *up;
+
+	if (peer < 0 || peer >= udma_num_peers) {
+		eprintf("veo_udma_pack: illegal peer id: %d\n", peer);
+		return -EINVAL;
+	}
+	up = udma_peers[peer];
+
+	/* buffer large enough to be sent directly? */
+	if (len >= UDMA_PACK_MAX) {
+		tlen = veo_udma_send(up->ctx, src, dst, len, 0);
+		if (tlen != len) {
+			eprintf("veo_udma_pack: direct send failed, %lu of %lu\n", tlen, len);
+			return -EPIPE;
+		}
+		return 0;
+	}
+
+	/* current request too large?
+	   send what we have in pack buffer and pack current req. */
+	if (_buffer_pack(&up->pack, src, dst, len) < 0) {
+		/* send */
+		if ((rc = veo_udma_pack_commit(peer)) != 0) {
+			eprintf("veo_udma_pack: commit failed, rc=%d\n", rc);
+			return rc;
+		}
+		return _buffer_pack(&up->pack, src, dst, len);
+	}
+	return 0;
+}
+
+int veo_udma_pack_commit(int peer)
+{
+	size_t len, slen;
+	struct vh_udma_peer *up;
+
+	if (peer < 0 || peer >= udma_num_peers) {
+		eprintf("veo_udma_pack: illegal peer id: %d\n", peer);
+		return -EINVAL;
+	}
+	up = udma_peers[peer];
+	len = up->pack.len;
+
+	slen = veo_udma_send(up->ctx, up->pack.buff, 0, len, 1);
+	up->pack.len = 0;
+	if (slen != len)
+		return -EPIPE;
+	return 0;
 }
