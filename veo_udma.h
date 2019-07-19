@@ -9,6 +9,7 @@
 #define UDMA_MAX_SPLIT 64
 #define UDMA_BUFF_LEN (64 * 1024 * 1024)
 #define UDMA_PACK_MAX (UDMA_BUFF_LEN / 2)
+#define UDMA_MAX_RECV_PACK 4096
 
 #define UDMA_DELAY_PEEK 1
 #define UDMA_TIMEOUT_US (10 * 1000000)
@@ -43,16 +44,30 @@ struct vh_udma_comm {
 	void *shm;		// buffer inside the shared memory segment
 };
 
-struct udma_pack {
+struct udma_send_pack {
 	void *buff;		// pack buffer
 	size_t len;		// filled buffer space length
+	size_t buff_len;	// max buffer space length
+};
+
+struct udma_recv_entry {
+	uint64_t src;		// src address on VE
+	void *dst;		// dst address on VH
+	size_t len;		// block length
+};
+
+struct udma_recv_pack {
+	struct udma_recv_entry entries[UDMA_MAX_RECV_PACK];	// recv pack entries buffer
+	int num_entries;	// number of entries
+	size_t data_len;	// length of packed buffer for the entries
 	size_t buff_len;	// max buffer space length
 };
 
 struct vh_udma_peer {
 	struct vh_udma_comm send;
 	struct vh_udma_comm recv;
-	struct udma_pack pack;
+	struct udma_send_pack send_pack;
+	struct udma_recv_pack recv_pack;
 	struct veo_thr_ctxt *ctx;
 	int proc_id;
 	int shm_key, shm_segid;
@@ -68,6 +83,7 @@ struct ve_udma_comm {
 	uint64_t buff_vehva;	// address of mirror buffer in 
 	void *buff;
 };
+
 struct ve_udma_peer {
 	struct ve_udma_comm send;
 	struct ve_udma_comm recv;
@@ -80,7 +96,7 @@ struct ve_udma_peer {
 
   Returns 0 if successful, negative number -ENOMEM if buffer didn't fit.
 */
-static inline int _buffer_pack(struct udma_pack *pb, void *src, uint64_t dst, size_t len)
+static inline int _buffer_send_pack(struct udma_send_pack *pb, void *src, uint64_t dst, size_t len)
 {
 	uint64_t *b = (uint64_t *)((uint64_t)pb->buff + pb->len);
 
@@ -95,7 +111,29 @@ static inline int _buffer_pack(struct udma_pack *pb, void *src, uint64_t dst, si
 	return 0;
 }
 
-static inline int _buffer_unpack(void *buff, size_t buff_len)
+/*
+  Check if len bytes would still fit into the recv pack buffer, or num_entries is too large.
+  Round up length to 8 byte boundary. If yes, put a recv_entry into the recv_pack buffer.
+
+  Returns 0 if successful, negative number -ENOMEM if buffer didn't fit.
+*/
+static inline int _buffer_recv_pack(struct udma_recv_pack *pb, uint64_t src, void *dst, size_t len)
+{
+	int i = pb->num_entries;
+
+	if (pb->data_len + ALIGN8B(len) > pb->buff_len || i == UDMA_MAX_RECV_PACK)
+		return -ENOMEM;
+
+	/* add entry */
+	pb->entries[i].src = src;
+	pb->entries[i].dst = dst;
+	pb->entries[i].len = len;
+	pb->data_len += ALIGN8B(len);
+	pb->num_entries++;
+	return 0;
+}
+
+static inline int _buffer_send_unpack(void *buff, size_t buff_len)
 {
 	void *dst;
 	size_t len;
@@ -123,8 +161,10 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 int veo_udma_peer_fini(int peer_id);
 size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, int pack);
 size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t len);
-int veo_udma_pack(int peer, void *src, uint64_t dst, size_t len);
-int veo_udma_pack_commit(int peer);
+int veo_udma_send_pack(int peer, void *src, uint64_t dst, size_t len);
+int veo_udma_send_pack_commit(int peer);
+int veo_udma_recv_pack(int peer, uint64_t src, void *dst, size_t len);
+int veo_udma_recv_pack_commit(int peer);
 
 #ifdef __cplusplus
 }

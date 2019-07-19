@@ -185,14 +185,17 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 	up->recv.len = (size_t *)mb_offs;
 
 	/* send pack buffer */
-	if ((up->pack.buff = malloc(up->send.buff_len)) == NULL) {
-		eprintf("veo_udma_peer_init: malloc packed buff failed.\n");
+	if ((up->send_pack.buff = malloc(up->send.buff_len)) == NULL) {
+		eprintf("veo_udma_peer_init: malloc send pack buff failed.\n");
 		rc = vh_shm_fini(up->shm_segid, up->shm_addr);
 		return rc ? rc : -ENOMEM;
 	}
-	up->pack.buff_len = up->send.buff_len;
-	up->pack.len = 0;
-	
+	up->send_pack.buff_len = up->send.buff_len;
+	up->send_pack.len = 0;
+	up->recv_pack.buff_len = up->send.buff_len;
+	up->recv_pack.data_len = 0;
+	up->recv_pack.num_entries = 0;
+
         pthread_mutex_init(&up->lock, NULL);
 	
 	rc = ve_udma_setup(up);
@@ -342,8 +345,8 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 		return 0;
 	}
 	if (pack) {
-		len = up->pack.len;
-		src = up->pack.buff;
+		len = up->send_pack.len;
+		src = up->send_pack.buff;
 		split = 1;
 		split_size = len;
 	} else
@@ -388,7 +391,7 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 	}
 	veo_args_free(argp);
 	if (pack) {
-		up->pack.len = 0;
+		up->send_pack.len = 0;
 		retval = len - retval;
 	}
 out:
@@ -461,17 +464,17 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 
   Return 0 if successful, negative number in case of failure:
   -EINVAL for invalid peer id,
-  -EPIPE if alrge direct buffer send failed,
+  -EPIPE if direct buffer send failed,
   ...
 */
-int veo_udma_pack(int peer, void *src, uint64_t dst, size_t len)
+int veo_udma_send_pack(int peer, void *src, uint64_t dst, size_t len)
 {
 	int rc = 0;
 	size_t tlen;
 	struct vh_udma_peer *up;
 
 	if (peer < 0 || peer >= udma_num_peers) {
-		eprintf("veo_udma_pack: illegal peer id: %d\n", peer);
+		eprintf("veo_udma_send_pack: illegal peer id: %d\n", peer);
 		return -EINVAL;
 	}
 	up = udma_peers[peer];
@@ -490,15 +493,15 @@ int veo_udma_pack(int peer, void *src, uint64_t dst, size_t len)
 
 	/* current request too large?
 	   send what we have in pack buffer and pack current req. */
-	if (_buffer_pack(&up->pack, src, dst, len) < 0) {
+	if (_buffer_send_pack(&up->send_pack, src, dst, len) < 0) {
 		/* send */
 		pthread_mutex_unlock(&up->lock);
-		if ((rc = veo_udma_pack_commit(peer)) != 0) {
-			eprintf("veo_udma_pack: commit failed, rc=%d\n", rc);
+		if ((rc = veo_udma_send_pack_commit(peer)) != 0) {
+			eprintf("veo_udma_send_pack: commit failed, rc=%d\n", rc);
 			goto done_nolock;
 		}
 		pthread_mutex_lock(&up->lock);
-		rc = _buffer_pack(&up->pack, src, dst, len);
+		rc = _buffer_send_pack(&up->send_pack, src, dst, len);
 	}
 done:
 	pthread_mutex_unlock(&up->lock);
@@ -506,7 +509,7 @@ done_nolock:
 	return rc;
 }
 
-int veo_udma_pack_commit(int peer)
+int veo_udma_send_pack_commit(int peer)
 {
 	size_t res;
 	struct vh_udma_peer *up;
@@ -519,4 +522,68 @@ int veo_udma_pack_commit(int peer)
 
 	/* src and len are set in _send() while the mutex is held */
 	return veo_udma_send(up->ctx, NULL, 0, 0, 1);
+}
+
+/*
+  Pack (small) buffer for receiving on VH from VE.
+
+  Return 0 if successful, negative number in case of failure:
+  -EINVAL for invalid peer id,
+  -EPIPE if direct buffer send failed,
+  ...
+*/
+int veo_udma_recv_pack(int peer, uint64_t src, void *dst, size_t len)
+{
+	int rc = 0;
+	size_t tlen;
+	struct vh_udma_peer *up;
+
+	if (peer < 0 || peer >= udma_num_peers) {
+		eprintf("veo_udma_recv_pack: illegal peer id: %d\n", peer);
+		return -EINVAL;
+	}
+	up = udma_peers[peer];
+
+	pthread_mutex_lock(&up->lock);
+	/* buffer large enough to be sent directly? */
+	if (len >= UDMA_PACK_MAX) {
+		pthread_mutex_unlock(&up->lock);
+		tlen = veo_udma_recv(up->ctx, src, dst, len, 0);
+		if (tlen != len) {
+			eprintf("veo_udma_recv_pack: direct recv failed, %lu of %lu\n", tlen, len);
+			rc = -EPIPE;
+		}
+		goto done_nolock;
+	}
+
+	/* current request too large?
+	   receive what we have in pack buffer and pack current req. */
+	if (_buffer_recv_pack(&up->recv_pack, src, dst, len) < 0) {
+		/* recv */
+		pthread_mutex_unlock(&up->lock);
+		if ((rc = veo_udma_recv_pack_commit(peer)) != 0) {
+			eprintf("veo_udma_recv_pack: commit failed, rc=%d\n", rc);
+			goto done_nolock;
+		}
+		pthread_mutex_lock(&up->lock);
+		rc = _buffer_recv_pack(&up->recv_pack, src, dst, len);
+	}
+done:
+	pthread_mutex_unlock(&up->lock);
+done_nolock:
+	return rc;
+}
+
+int veo_udma_recv_pack_commit(int peer)
+{
+	size_t res;
+	struct vh_udma_peer *up;
+
+	if (peer < 0 || peer >= udma_num_peers) {
+		eprintf("veo_udma_recv_pack: illegal peer id: %d\n", peer);
+		return -EINVAL;
+	}
+	up = udma_peers[peer];
+
+	return veo_udma_recv(up->ctx, NULL, 0, 0, 1);
 }
