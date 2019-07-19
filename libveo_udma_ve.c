@@ -124,6 +124,9 @@ int ve_udma_init(struct vh_udma_peer *vh_up)
 	ve_up->send.shm_vehva = shm_vehva +((uint64_t)vh_up->recv.shm - vh_shm_base);
 	ve_up->recv.len_vehva = shm_vehva +((uint64_t)vh_up->send.len - vh_shm_base);
 	ve_up->recv.shm_vehva = shm_vehva +((uint64_t)vh_up->send.shm - vh_shm_base);
+	ve_up->send.buff_len = vh_up->recv.buff_len;
+	ve_up->recv.buff_len = vh_up->send.buff_len;
+	
 
 	// Initialize DMA
 	err = ve_dma_init();
@@ -262,6 +265,56 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 	return len - lenp;
 }
 
+
+int ve_udma_send_packed(struct udma_recv_entry *e, int num_entries)
+{
+	int i, err;
+	size_t tlen = 0, elen;
+	struct ve_udma_peer *ve_up = udma_peer;
+	long ts = getusrcc();
+	ve_dma_handle_t dma_handle;
+	char *pb = (char *)ve_up->send.buff;
+
+	/* pack data into buffer */
+	for (i = 0; i < num_entries; i++) {
+		elen = ALIGN8B(e[i].len);
+		if (tlen + elen > ve_up->send.buff_len) {
+			eprintf("VE: send_packed buffer overflow! "
+				"i=%d, num_entries=%d, tlen=%lu, elen=%lu, "
+				"buff_len=$lu\n",
+				i, num_entries, tlen, elen, ve_up->send.buff_len);
+			return -ENOMEM;
+		}
+		memcpy((void *)pb, (void *)e[i].src, e[i].len);
+		tlen += elen;
+		pb += elen;
+	}
+	while ((err = ve_dma_post(ve_up->send.shm_vehva, ve_up->send.buff_vehva,
+				  (int)tlen, &dma_handle)) == -EAGAIN) {
+		if (usrcc_diff_us(ts) > 5 * UDMA_TIMEOUT_US) {
+			eprintf("VE: send_packed timeout waiting for DMA post. "
+				"num_entries=%d, tlen=%ld\n",
+				num_entries, tlen);
+			err = -ETIME;
+			break;
+		}
+	}
+	if (err) {
+		eprintf("VE: ve_dma_post has failed! err = %d\n", err);
+		return err;
+	}
+	while ((err = ve_dma_poll(&dma_handle)) == -EAGAIN) {
+		if (usrcc_diff_us(ts) > 5 * UDMA_TIMEOUT_US) {
+			eprintf("VE: send_packed timeout waiting for DMA descriptor. "
+				"num_entries=%d, tlen=%ld\n",
+				num_entries, tlen);
+			err = -ETIME;
+			break;
+		}
+	}
+	return err;
+}
+
 size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pack)
 {
 	int j, jr, err;
@@ -278,7 +331,9 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pac
 		if (tlenr[j] == 0 && lenp > 0) {
 			err = 0;
 			// wait for len signal to be set
+			ve_inst_fenceLF();
 			while((tlen = ve_inst_lhm(SPLITLEN(ve_up->recv.len_vehva, j))) == 0) {
+				ve_inst_fenceLF();
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for tlen. "
 						"len=%ld of %lu, split=%d, split_sz=%lu\n",
@@ -306,6 +361,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pac
 					continue;
 				eprintf("VE: ve_dma_post has failed! err = %d\n", err);
 				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, j), 0);
+				ve_inst_fenceSF();
 				break;
 			}
 			dstr[j] = (uint64_t)dstp;
@@ -323,8 +379,8 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pac
 
 			if (err == 0) { // DMA completed normally
 				if (pack) {
-					err = _buffer_unpack(SPLITBUFF(ve_up->recv.buff, jr, split_size),
-							     (size_t)tlenr[jr]);
+					err = _buffer_send_unpack(SPLITBUFF(ve_up->recv.buff, jr, split_size),
+                                                                  (size_t)tlenr[jr]);
 					/* TODO: error handling */
 				} else {
 					memcpy((void *)dstr[jr],
@@ -332,6 +388,7 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pac
 					       tlenr[jr]);
 				}
 				ve_inst_shm(SPLITLEN(ve_up->recv.len_vehva, jr), 0);
+				ve_inst_fenceLSF();
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;
 				ts = getusrcc();

@@ -13,6 +13,11 @@ static inline void ve_inst_fenceLF(void)
     asm ("fencem 2":::"memory");
 }
 
+static inline void ve_inst_fenceLSF(void)
+{
+    asm ("fencem 3":::"memory");
+}
+
 static inline uint64_t ve_inst_lhm(void *vehva)
 {
     uint64_t volatile ret;

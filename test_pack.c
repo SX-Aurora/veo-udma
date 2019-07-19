@@ -112,16 +112,16 @@ int main(int argc, char **argv)
 		goto finish;
 	}
 
-        printf("calling veo_udma_pack\n");
+        printf("calling veo_udma_send_pack\n");
         clock_gettime(CLOCK_REALTIME, &ts);
 	/* packing data multiple times */
         for (i = 0; i < bsize * 4; i += 256) {
-		res = veo_udma_pack(peer_id, &local_buff[i % bsize],
-				    ve_buff + (i % bsize) * sizeof(long),
-				    256 * sizeof(long));
-		printf("veo_udma_pack: returned %d\n", res);
+		res = veo_udma_send_pack(peer_id, &local_buff[i % bsize],
+                                         ve_buff + (i % bsize) * sizeof(long),
+                                         256 * sizeof(long));
+		printf("veo_udma_send_pack: returned %d\n", res);
 	}
-        res = veo_udma_pack_commit(peer_id);
+        res = veo_udma_send_pack_commit(peer_id);
         clock_gettime(CLOCK_REALTIME, &te);
         start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
         end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
@@ -129,6 +129,7 @@ int main(int argc, char **argv)
         bw = bw / 1e6;
         printf("bw=%f7.0 MB/s\n", res, bw);
 
+#if 0
         printf("calling veo_udma_recv\n");
         clock_gettime(CLOCK_REALTIME, &ts);
         res = veo_udma_recv(ctx, ve_buff, local_buff2, bsize * sizeof(long));
@@ -138,7 +139,16 @@ int main(int argc, char **argv)
         bw = (double)bsize * n/((double)(end - start)/1e9);
         bw = bw / 1e6;
         printf("veo_udma_recv returned: %lu bw=%f7.0 MB/s\n", res, bw);
-
+#else
+        printf("\ncalling veo_udma_recv_pack\n");
+        for (i = 0; i < bsize * 3; i += 64) {
+		res = veo_udma_recv_pack(peer_id, ve_buff + (i % bsize) * sizeof(long),
+                                         &local_buff2[i % bsize],
+                                         64 * sizeof(long));
+		printf("veo_udma_recv_pack: returned %d\n", res);
+	}
+        res = veo_udma_recv_pack_commit(peer_id);
+#endif
         rc = 0;
         // check local_buff content
         for (i = 0; i < bsize; i++) {

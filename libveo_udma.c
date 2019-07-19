@@ -80,6 +80,7 @@ static void vh_udma_proc_setup(struct vh_udma_proc *pp, int ve_node_id,
 	pp->ve_udma_fini = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_fini");
 	pp->ve_udma_send = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_send");
 	pp->ve_udma_recv = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_recv");
+	pp->ve_udma_send_packed = veo_get_sym(pp->proc, pp->lib_handle, "ve_udma_send_packed");
 }
 	
 static int ve_udma_setup(struct vh_udma_peer *up)
@@ -222,7 +223,7 @@ int veo_udma_peer_fini(int peer_id)
 		free(udma_procs[up->proc_id]);
 		udma_procs[up->proc_id] = NULL;
 	}
-	free(up->pack.buff);
+	free(up->send_pack.buff);
 	free(up);
 	udma_peers[peer_id] = NULL;
 	return 0;
@@ -319,9 +320,10 @@ static int calc_split_recv(size_t len, size_t *split_size)
 #define SPLITBUFF(base, idx, size) (void *)((char *)base + idx * size)
 
 /*
-  Sent buffer from VH to VE
+  Sent buffer from VH to VE internal routine with pack option.
 */
-size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, int pack)
+static size_t
+_veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, int pack)
 {
 	size_t tlen, lenp, split_size;
 	uint64_t req, retval = 0, dstp = dst;
@@ -366,6 +368,10 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_recv, argp);
 	i = 0;
 	while (lenp > 0) {
+		/* this IS zero at this point, but is an attempt to see if
+		   it impacts our issue with occasionally reading a wrong value
+		   on the VE */
+		*(volatile size_t *)(up->send.len + i) = 0;
 		tlen = MIN(split_size, lenp);
 		mp = memcpy(SPLITBUFF(up->send.shm, i, split_size), (void *)srcp, tlen);
 		*(volatile size_t *)(up->send.len + i) = tlen;
@@ -397,6 +403,14 @@ size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t l
 out:
 	pthread_mutex_unlock(&up->lock);
 	return (size_t)retval;
+}
+
+/*
+  Sent buffer from VH to VE, function exposed to users.
+*/
+size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len)
+{
+	return _veo_udma_send(ctx, src, dst, len, 0);
 }
 
 /*
@@ -460,6 +474,62 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 }
 
 /*
+  Recv several (packed) buffers from VE to VH in one transfer.
+*/
+static int _veo_udma_recv_packed(int peer)
+{
+	uint64_t req, retval = 0;
+	int i, rc, err = 0;
+	size_t elen;
+	char *pb;
+	struct vh_udma_peer *up;
+
+	if (peer < 0 || peer >= udma_num_peers) {
+		eprintf("veo_udma_recv_packed: illegal peer id: %d\n", peer);
+		return -EINVAL;
+	}
+	up = udma_peers[peer];
+	if (!up) {
+		eprintf("veo_udma_recv ctx not found!\n");
+		return 0;
+	}
+	if (pthread_mutex_trylock(&up->lock) != 0) {
+		eprintf("veo_udma_recv_packed found mutex locked!?\n");
+		return 0;
+	}
+	if (up->recv_pack.num_entries == 0)
+		return 0;
+
+	struct veo_args *argp = veo_args_alloc();
+	veo_args_set_stack(argp, VEO_INTENT_IN, 0, (char *)&up->recv_pack.entries,
+			   sizeof(struct udma_recv_entry) * up->recv_pack.num_entries);
+	veo_args_set_i32(argp, 1, up->recv_pack.num_entries);
+	req = veo_call_async(up->ctx, udma_procs[up->proc_id]->ve_udma_send_packed, argp);
+	/* TODO: check if req is valid */
+	rc = veo_call_wait_result(up->ctx, req, &retval);
+	veo_args_free(argp);
+	if (rc) {
+		if (rc == VEO_COMMAND_EXCEPTION)
+			eprintf("recv_packed failed with exception on VE. %p\n", (void *)retval);
+		else if (rc = VEO_COMMAND_ERROR)
+			eprintf("recv_packed failed with error on VH.\n");
+		return rc;
+	}
+	if ((int)retval != 0)
+		return (int)retval;
+
+	/* unpack buffer */
+	pb = (char *)up->recv.shm;
+	for (i = 0; i < up->recv_pack.num_entries; i++) {
+		elen = up->recv_pack.entries[i].len;
+		memcpy(up->recv_pack.entries[i].dst, pb, elen);
+		pb += ALIGN8B(elen);
+	}
+	pthread_mutex_unlock(&up->lock);
+	return 0;
+}
+
+/*
   Pack (small) buffer for sending from VH to VE.
 
   Return 0 if successful, negative number in case of failure:
@@ -483,7 +553,7 @@ int veo_udma_send_pack(int peer, void *src, uint64_t dst, size_t len)
 	/* buffer large enough to be sent directly? */
 	if (len >= UDMA_PACK_MAX) {
 		pthread_mutex_unlock(&up->lock);
-		tlen = veo_udma_send(up->ctx, src, dst, len, 0);
+		tlen = _veo_udma_send(up->ctx, src, dst, len, 0);
 		if (tlen != len) {
 			eprintf("veo_udma_pack: direct send failed, %lu of %lu\n", tlen, len);
 			rc = -EPIPE;
@@ -521,7 +591,7 @@ int veo_udma_send_pack_commit(int peer)
 	up = udma_peers[peer];
 
 	/* src and len are set in _send() while the mutex is held */
-	return veo_udma_send(up->ctx, NULL, 0, 0, 1);
+	return _veo_udma_send(up->ctx, NULL, 0, 0, 1);
 }
 
 /*
@@ -548,7 +618,7 @@ int veo_udma_recv_pack(int peer, uint64_t src, void *dst, size_t len)
 	/* buffer large enough to be sent directly? */
 	if (len >= UDMA_PACK_MAX) {
 		pthread_mutex_unlock(&up->lock);
-		tlen = veo_udma_recv(up->ctx, src, dst, len, 0);
+		tlen = veo_udma_recv(up->ctx, src, dst, len);
 		if (tlen != len) {
 			eprintf("veo_udma_recv_pack: direct recv failed, %lu of %lu\n", tlen, len);
 			rc = -EPIPE;
@@ -576,14 +646,5 @@ done_nolock:
 
 int veo_udma_recv_pack_commit(int peer)
 {
-	size_t res;
-	struct vh_udma_peer *up;
-
-	if (peer < 0 || peer >= udma_num_peers) {
-		eprintf("veo_udma_recv_pack: illegal peer id: %d\n", peer);
-		return -EINVAL;
-	}
-	up = udma_peers[peer];
-
-	return veo_udma_recv(up->ctx, NULL, 0, 0, 1);
+	return _veo_udma_recv_packed(peer);
 }

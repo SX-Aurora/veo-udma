@@ -36,6 +36,7 @@ struct vh_udma_proc {
 	uint64_t ve_udma_fini;	// address of function on VE
 	uint64_t ve_udma_send;	// address of function on VE
 	uint64_t ve_udma_recv;	// address of function on VE
+	uint64_t ve_udma_send_packed;	// address of function on VE
 };
 	
 struct vh_udma_comm {
@@ -159,7 +160,7 @@ static inline int _buffer_send_unpack(void *buff, size_t buff_len)
 int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		       struct veo_thr_ctxt *ctx, uint64_t lib_handle);
 int veo_udma_peer_fini(int peer_id);
-size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, int pack);
+size_t veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len);
 size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t len);
 int veo_udma_send_pack(int peer, void *src, uint64_t dst, size_t len);
 int veo_udma_send_pack_commit(int peer);

@@ -133,7 +133,7 @@ int main(int argc, char **argv)
 		printf("calling veo_udma_send\n");
 		clock_gettime(CLOCK_REALTIME, &ts);
 		for (i = 0; i < n; i++)
-                  res = veo_udma_send(ctx, local_buff, ve_buff, bsize, 0);
+                  res = veo_udma_send(ctx, local_buff, ve_buff, bsize);
 		clock_gettime(CLOCK_REALTIME, &te);
 		start = ts.tv_sec * 1000 * 1000 * 1000 + ts.tv_nsec;
 		end = te.tv_sec * 1000 * 1000 * 1000 + te.tv_nsec;
