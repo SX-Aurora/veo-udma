@@ -368,10 +368,6 @@ _veo_udma_send(struct veo_thr_ctxt *ctx, void *src, uint64_t dst, size_t len, in
 	req = veo_call_async(ctx, udma_procs[up->proc_id]->ve_udma_recv, argp);
 	i = 0;
 	while (lenp > 0) {
-		/* this IS zero at this point, but is an attempt to see if
-		   it impacts our issue with occasionally reading a wrong value
-		   on the VE */
-		*(volatile size_t *)(up->send.len + i) = 0;
 		tlen = MIN(split_size, lenp);
 		mp = memcpy(SPLITBUFF(up->send.shm, i, split_size), (void *)srcp, tlen);
 		*(volatile size_t *)(up->send.len + i) = tlen;

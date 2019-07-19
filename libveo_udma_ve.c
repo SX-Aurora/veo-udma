@@ -205,7 +205,9 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 	while(lenp > 0 || (jr >= 0 && tlenr[jr] > 0)) {
 		if (tlenr[j] == 0 && lenp > 0) {
 			err = 0;
+			ve_inst_fenceLF();
 			while(ve_inst_lhm(SPLITLEN(ve_up->send.len_vehva, j)) > 0) {
+				ve_inst_fenceLF();
 				if (usrcc_diff_us(ts) > UDMA_TIMEOUT_US) {
 					eprintf("VE: timeout waiting for VH recv. "
 						"len=%ld of %lu, split=%d, split_sz=%lu\n",
@@ -228,6 +230,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 					continue;
 				eprintf("VE: ve_dma_post has failed! err = %d\n", err);
 				ve_inst_shm(SPLITLEN(ve_up->send.len_vehva, j), 0);
+				ve_inst_fenceSF();
 				break;
 			}
 			tlenr[j] = tlen;
@@ -244,6 +247,7 @@ size_t ve_udma_send(void *src, size_t len, int split, size_t split_size)
 
 			if (err == 0) { // DMA completed normally
 				ve_inst_shm(SPLITLEN(ve_up->send.len_vehva, jr), tlenr[jr]);
+				ve_inst_fenceLSF();
 				tlenr[jr] = 0;
 				jr = (jr + 1) % split;
 				ts = getusrcc();
