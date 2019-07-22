@@ -208,7 +208,7 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		} else
 			up->max_pack_send = v;
 	}
-	up->max_pack_send = UDMA_PACK_MAX_RECV;
+	up->max_pack_recv = UDMA_PACK_MAX_RECV;
 	env = getenv("UDMA_MAX_PACK_RECV");
 	if (env) {
 		size_t v = (size_t)atol(env);
