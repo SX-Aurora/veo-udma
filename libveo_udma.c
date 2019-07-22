@@ -129,7 +129,7 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 		       struct veo_thr_ctxt *ctx, uint64_t lib_handle)
 {
 	int rc, i, peer_id;
-	char *mb_offs = NULL;
+	char *env, *mb_offs = NULL;
 	struct vh_udma_peer *up;
 	int proc_id = -1;
 
@@ -198,7 +198,16 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 	up->recv_pack.num_entries = 0;
 
         pthread_mutex_init(&up->lock, NULL);
-	
+	up->max_pack_size = UDMA_PACK_MAX;
+	env = getenv("UDMA_MAX_PACK_SIZE");
+	if (env) {
+		size_t v = (size_t)atol(env);
+		if (v < 0 || v > UDMA_PACK_MAX) {
+			eprintf("Wrong value for UDMA_MAX_PACK_SIZE: %ul, "
+				"using default value %ul\n", UDMA_PACK_MAX);
+		} else
+			up->max_pack_size = v;
+	}
 	rc = ve_udma_setup(up);
 	return rc ? rc : peer_id;
 }
@@ -475,7 +484,7 @@ size_t veo_udma_recv(struct veo_thr_ctxt *ctx, uint64_t src, void *dst, size_t l
 static int _veo_udma_recv_packed(int peer)
 {
 	uint64_t req, retval = 0;
-	int i, rc, err = 0;
+	int i, rc = 0, err = 0;
 	size_t elen;
 	char *pb;
 	struct vh_udma_peer *up;
@@ -494,7 +503,7 @@ static int _veo_udma_recv_packed(int peer)
 		return 0;
 	}
 	if (up->recv_pack.num_entries == 0)
-		return 0;
+		goto out;
 
 	struct veo_args *argp = veo_args_alloc();
 	veo_args_set_stack(argp, VEO_INTENT_IN, 0, (char *)&up->recv_pack.entries,
@@ -509,10 +518,12 @@ static int _veo_udma_recv_packed(int peer)
 			eprintf("recv_packed failed with exception on VE. %p\n", (void *)retval);
 		else if (rc = VEO_COMMAND_ERROR)
 			eprintf("recv_packed failed with error on VH.\n");
-		return rc;
+		goto out;
 	}
-	if ((int)retval != 0)
-		return (int)retval;
+	if ((int)retval != 0) {
+		rc = (int)retval;
+		goto out;
+	}
 
 	/* unpack buffer */
 	pb = (char *)up->recv.shm;
@@ -521,8 +532,11 @@ static int _veo_udma_recv_packed(int peer)
 		memcpy(up->recv_pack.entries[i].dst, pb, elen);
 		pb += ALIGN8B(elen);
 	}
+out:
+	up->recv_pack.num_entries = 0;
+	up->recv_pack.data_len = 0;
 	pthread_mutex_unlock(&up->lock);
-	return 0;
+	return rc;
 }
 
 /*
@@ -547,7 +561,7 @@ int veo_udma_send_pack(int peer, void *src, uint64_t dst, size_t len)
 
 	pthread_mutex_lock(&up->lock);
 	/* buffer large enough to be sent directly? */
-	if (len >= UDMA_PACK_MAX) {
+	if (len >= up->max_pack_size) {
 		pthread_mutex_unlock(&up->lock);
 		tlen = _veo_udma_send(up->ctx, src, dst, len, 0);
 		if (tlen != len) {
@@ -612,7 +626,7 @@ int veo_udma_recv_pack(int peer, uint64_t src, void *dst, size_t len)
 
 	pthread_mutex_lock(&up->lock);
 	/* buffer large enough to be sent directly? */
-	if (len >= UDMA_PACK_MAX) {
+	if (len >= up->max_pack_size) {
 		pthread_mutex_unlock(&up->lock);
 		tlen = veo_udma_recv(up->ctx, src, dst, len);
 		if (tlen != len) {

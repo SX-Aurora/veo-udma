@@ -74,6 +74,7 @@ struct vh_udma_peer {
 	int shm_key, shm_segid;
 	size_t shm_size;
 	void *shm_addr;
+	size_t max_pack_size;
 	pthread_mutex_t lock;
 };
 
