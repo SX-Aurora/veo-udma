@@ -8,7 +8,8 @@
 #define UDMA_MAX_PEERS 64
 #define UDMA_MAX_SPLIT 64
 #define UDMA_BUFF_LEN (64 * 1024 * 1024)
-#define UDMA_PACK_MAX (UDMA_BUFF_LEN / 2)
+#define UDMA_PACK_MAX_SEND (UDMA_BUFF_LEN / 2)
+#define UDMA_PACK_MAX_RECV (UDMA_BUFF_LEN / 16)
 #define UDMA_MAX_RECV_PACK 4096
 
 #define UDMA_DELAY_PEEK 1
@@ -74,7 +75,8 @@ struct vh_udma_peer {
 	int shm_key, shm_segid;
 	size_t shm_size;
 	void *shm_addr;
-	size_t max_pack_size;
+	size_t max_pack_send;
+	size_t max_pack_recv;
 	pthread_mutex_t lock;
 };
 

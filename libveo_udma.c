@@ -198,15 +198,25 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 	up->recv_pack.num_entries = 0;
 
         pthread_mutex_init(&up->lock, NULL);
-	up->max_pack_size = UDMA_PACK_MAX;
-	env = getenv("UDMA_MAX_PACK_SIZE");
+	up->max_pack_send = UDMA_PACK_MAX_SEND;
+	env = getenv("UDMA_MAX_PACK_SEND");
 	if (env) {
 		size_t v = (size_t)atol(env);
-		if (v < 0 || v > UDMA_PACK_MAX) {
-			eprintf("Wrong value for UDMA_MAX_PACK_SIZE: %ul, "
-				"using default value %ul\n", UDMA_PACK_MAX);
+		if (v < 0 || v > UDMA_BUFF_LEN * 2 / 3) {
+			eprintf("Wrong value for UDMA_MAX_PACK_SEND: %ul, "
+				"using default value %ul\n", UDMA_PACK_MAX_SEND);
 		} else
-			up->max_pack_size = v;
+			up->max_pack_send = v;
+	}
+	up->max_pack_send = UDMA_PACK_MAX_RECV;
+	env = getenv("UDMA_MAX_PACK_RECV");
+	if (env) {
+		size_t v = (size_t)atol(env);
+		if (v < 0 || v > UDMA_BUFF_LEN * 2 / 3) {
+			eprintf("Wrong value for UDMA_MAX_PACK_RECV: %ul, "
+				"using default value %ul\n", UDMA_PACK_MAX_RECV);
+		} else
+			up->max_pack_recv = v;
 	}
 	rc = ve_udma_setup(up);
 	return rc ? rc : peer_id;
@@ -561,7 +571,7 @@ int veo_udma_send_pack(int peer, void *src, uint64_t dst, size_t len)
 
 	pthread_mutex_lock(&up->lock);
 	/* buffer large enough to be sent directly? */
-	if (len >= up->max_pack_size) {
+	if (len >= up->max_pack_send) {
 		pthread_mutex_unlock(&up->lock);
 		tlen = _veo_udma_send(up->ctx, src, dst, len, 0);
 		if (tlen != len) {
@@ -626,7 +636,7 @@ int veo_udma_recv_pack(int peer, uint64_t src, void *dst, size_t len)
 
 	pthread_mutex_lock(&up->lock);
 	/* buffer large enough to be sent directly? */
-	if (len >= up->max_pack_size) {
+	if (len >= up->max_pack_recv) {
 		pthread_mutex_unlock(&up->lock);
 		tlen = veo_udma_recv(up->ctx, src, dst, len);
 		if (tlen != len) {
