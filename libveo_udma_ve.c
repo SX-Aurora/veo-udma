@@ -413,18 +413,3 @@ size_t ve_udma_recv(void *dst, size_t len, int split, size_t split_size, int pac
 	}
 	return len - lenp;
 }
-
-
-
-/* 
-   C version of some offloaded function.
-   Actually this should also be fine with a fortran function.
-*/
-int my_func(int *n, double *a, double *b)
-{
-	int i;
-	for(i = 0; i < *n; i++) {
-		b[i] = a[i] * 2;
-	}
-	return 0;
-}
