@@ -1,12 +1,14 @@
 NCC = /opt/nec/ve/bin/ncc
 GCC = gcc
 
-VEOSTATIC = -DVEO_STATIC=1
+#VEOSTATIC = -DVEO_STATIC=1
+
+TARGETS = libveo_udma.so hello latency bandwidth bandwidth_veo test_pack
 
 ifdef VEOSTATIC
-ALL: libveo_udma.so hello test_pack veorun_static
+ALL:  $(TARGETS) veorun_static
 else
-ALL: libveo_udma.so hello test_pack libveo_udma_ve.so
+ALL: $(TARGETS) libveo_udma_ve.so
 endif
 
 libveo_udma.o: libveo_udma.c veo_udma.h
@@ -25,6 +27,17 @@ hello: hello.c veo_udma.h libveo_udma.so
 	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
 		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
 		-lveo -lveo_udma
+
+bandwidth: bandwidth.c veo_udma.h libveo_udma.so
+	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
+		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
+		-lveo -lveo_udma
+
+bandwidth_veo: bandwidth_veo.c veo_udma.h libveo_udma.so
+	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
+		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
+		-lveo -lveo_udma
+
 latency: latency.c veo_udma.h libveo_udma.so
 	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
 		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
