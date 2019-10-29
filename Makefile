@@ -25,6 +25,10 @@ hello: hello.c veo_udma.h libveo_udma.so
 	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
 		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
 		-lveo -lveo_udma
+latency: latency.c veo_udma.h libveo_udma.so
+	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
+		-L. -Wl,-rpath=/opt/nec/ve/veos/lib64 -Wl,-rpath=$(shell pwd) \
+		-lveo -lveo_udma
 
 test_pack: test_pack.c veo_udma.h libveo_udma.so
 	gcc -g $(VEOSTATIC) -o $@ $< -I/opt/nec/ve/veos/include -L/opt/nec/ve/veos/lib64 \
