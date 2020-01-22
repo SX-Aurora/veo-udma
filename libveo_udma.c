@@ -59,13 +59,19 @@ static int vh_shm_fini(int segid, void *local_addr)
 			return err;
 		}
 	}
-	if (segid != -1) {
-		err = shmctl(segid, IPC_RMID, NULL);
-		if (err < 0)
-			eprintf("[vh_shm_fini] Failed to remove SHM segment ID %d\n", segid);
-	}
-        dprintf("vh_shm_fini shmctl RMID returned %d\n", err);
 	return err;
+}
+
+static void vh_shm_destroy(int segid)
+{
+	int err = 0;
+	struct shmid_ds ds;
+
+	if (-1 == (shmctl(segid, IPC_STAT, &ds)))
+		perror("[vh_shm_destroy] Failed shmctl IPC_STAT");
+	err = shmctl(segid, IPC_RMID, &ds);
+	if (err < 0)
+		eprintf("[vh_shm_destroy] Failed to mark SHM seg ID %d destroyed\n", segid);
 }
 
 static void vh_udma_proc_setup(struct vh_udma_proc *pp, int ve_node_id,
@@ -167,6 +173,9 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 	/* TODO: make key VE and core specific to avoid duplicate use of UDMA */
 	up->shm_key = getpid() * UDMA_MAX_PEERS + udma_num_peers;
 	up->shm_size = 2 * UDMA_BUFF_LEN;
+        /*
+         * Allocate shared memory segment
+         */
 	up->shm_segid = vh_shm_init(up->shm_key, up->shm_size, &up->shm_addr);
 	if (up->shm_segid == -1) {
 		rc = vh_shm_fini(up->shm_segid, up->shm_addr);
@@ -219,6 +228,7 @@ int veo_udma_peer_init(int ve_node_id, struct veo_proc_handle *proc,
 			up->max_pack_recv = v;
 	}
 	rc = ve_udma_setup(up);
+	vh_shm_destroy(up->shm_segid);
 	return rc ? rc : peer_id;
 }
 

@@ -19,9 +19,11 @@
 
 #define ALIGN8B(x) (((uint64_t)(x) + 7UL) & ~7UL)
 
-#define DEBUG 1
+//#define DEBUG 1
 #ifdef DEBUG
 #define dprintf(args...) printf(args)
+#else
+#define dprintf(args...)
 #endif
 #define eprintf(args...) fprintf(stderr, args)
 
